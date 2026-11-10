@@ -1,0 +1,183 @@
+[
+ {
+  "id": "keep",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t keep",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y"
+ },
+ {
+  "id": "crit",
+  "lane": "security",
+  "severity": "CRITICAL",
+  "confidence": "HIGH",
+  "title": "t crit",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y",
+  "code_example": "x"
+ },
+ {
+  "id": "crit-noex",
+  "lane": "security",
+  "severity": "CRITICAL",
+  "confidence": "HIGH",
+  "title": "t crit-noex",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y"
+ },
+ {
+  "id": "badlane",
+  "lane": "nope",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t badlane",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y"
+ },
+ {
+  "id": "longtitle",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y"
+ },
+ {
+  "id": "missing",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t missing",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "",
+  "trigger": "x gives y"
+ },
+ {
+  "id": "pre",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t pre",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y",
+  "introduced_by_pr": "pre-existing"
+ },
+ {
+  "id": "g2",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t g2",
+  "location": "a.py:99",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y"
+ },
+ {
+  "id": "g2-locs",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t g2-locs",
+  "location": "a.py:99",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y",
+  "locations": [
+   "a.py:3"
+  ]
+ },
+ {
+  "id": "g3",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t g3",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": ""
+ },
+ {
+  "id": "g3conv",
+  "lane": "conventions",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t g3conv",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "n/a (convention)"
+ },
+ {
+  "id": "g4",
+  "lane": "security",
+  "severity": "MEDIUM",
+  "confidence": "LOW",
+  "title": "t g4",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": ""
+ },
+ {
+  "id": "q-low",
+  "lane": "security",
+  "severity": "QUESTION",
+  "confidence": "LOW",
+  "title": "t q-low",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": ""
+ },
+ {
+  "id": "intent",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t intent",
+  "location": "PR description",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y"
+ },
+ {
+  "id": "hunk",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t hunk",
+  "location": "@@ -1 +1 @@",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y"
+ },
+ {
+  "id": "badsev",
+  "lane": "security",
+  "severity": "BLOCKER",
+  "confidence": "HIGH",
+  "title": "t badsev",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y"
+ }
+]

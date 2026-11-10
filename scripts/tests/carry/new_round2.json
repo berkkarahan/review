@@ -1,0 +1,39 @@
+{
+  "pr": "example-org/example-repo#101",
+  "last_sha": "2222222222222222222222222222222222222222",
+  "previous": [],
+  "still_open": ["A1"],
+  "cleared": [
+    {"id": "S1", "evidence": "backend/auth/tokens.py:34 now rejects an expired token before the refresh.", "lane": "security"},
+    {"id": "B2", "evidence": "", "lane": "security"},
+    {"id": "B1", "evidence": "Looks fine to the verifier.", "lane": "adherence"}
+  ],
+  "findings": [
+    {"id": "ad-1", "lane": "adherence", "severity": "HIGH", "confidence": "HIGH", "title": "Partial capture ignored in refund",
+     "location": "backend/orders/service.py:124", "issue": "The refund total uses the full order amount and ignores partial captures.",
+     "trigger": "Capture 40 of 100, then refund: the refund shows 100.", "fix": "Use the captured sum.", "verified": "confirmed", "sources": ["ad-1"]},
+    {"id": "cq-2", "lane": "code-quality", "severity": "MEDIUM", "confidence": "HIGH", "title": "Split rounding drops one cent",
+     "location": "backend/orders/service.py:202", "issue": "Splitting an amount in three parts drops one cent through rounding.",
+     "fix": "Give the rest to the last part.", "sources": ["cq-2"]},
+    {"id": "sec-3", "lane": "security", "severity": "MEDIUM", "confidence": "MEDIUM", "title": "Order reference logged in clear text",
+     "location": "backend/orders/logging.py:16", "issue": "The order reference is written to the log in clear text.",
+     "fix": "Mask the value.", "sources": ["sec-3"]},
+    {"id": "perf-1", "lane": "performance", "severity": "MEDIUM", "confidence": "HIGH", "title": "Query in a loop on the bulk path",
+     "location": "backend/orders/queries.py:77", "issue": "The bulk path runs the loop for up to 400 lines, one query each.",
+     "fix": "Prefetch the lines.", "challenges": "P1",
+     "evidence": "backend/orders/bulk.py:20 calls the loop with up to 400 lines.", "sources": ["perf-1"]},
+    {"id": "sec-5", "lane": "security", "severity": "HIGH", "confidence": "HIGH", "title": "Session id kept at login",
+     "location": "backend/auth/session.py:91", "issue": "The session id does not change at login.",
+     "trigger": "An attacker sets a session id, the user logs in, the attacker keeps access.", "fix": "Rotate the id.",
+     "challenges": "S3", "evidence": "backend/auth/middleware.py:12 skips the rotation for API clients, so the login route keeps the old id.", "sources": ["sec-5"]},
+    {"id": "sec-6", "lane": "security", "severity": "HIGH", "confidence": "HIGH", "title": "CSV cells start with formula characters",
+     "location": "backend/orders/export.py:70", "issue": "The CSV export writes cell values that start with an equals sign without escaping.",
+     "trigger": "A customer name starts with =, and a spreadsheet runs it.", "fix": "Prefix a quote.", "verified": "confirmed", "sources": ["sec-6"]},
+    {"id": "cq-7", "lane": "code-quality", "severity": "MEDIUM", "confidence": "MEDIUM", "title": "Duplicate helper",
+     "location": "backend/orders/new_module.py:10", "issue": "The new module copies the date helper from the billing module.",
+     "fix": "Import the helper.", "sources": ["cq-7"]},
+    {"id": "sec-8", "lane": "security", "severity": "MEDIUM", "confidence": "MEDIUM", "title": "Debug flag read from query",
+     "location": "backend/orders/other.py:5", "issue": "The view reads a debug flag from the query string.",
+     "fix": "Remove the flag.", "sources": ["sec-8"]}
+  ]
+}

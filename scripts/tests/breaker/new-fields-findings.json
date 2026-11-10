@@ -1,0 +1,97 @@
+[
+ {
+  "id": "n-ok",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t n-ok",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y",
+  "status": "todo",
+  "origin": "new",
+  "reopened_from": "abc1234",
+  "challenges": "B1",
+  "reason": "r",
+  "commit": "abc1234"
+ },
+ {
+  "id": "n-null",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t n-null",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y",
+  "status": null,
+  "origin": null,
+  "reason": null
+ },
+ {
+  "id": "n-badstatus",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t n-badstatus",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y",
+  "status": "open"
+ },
+ {
+  "id": "n-badorigin",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t n-badorigin",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y",
+  "origin": "old"
+ },
+ {
+  "id": "n-badcommit",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t n-badcommit",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y",
+  "commit": ""
+ },
+ {
+  "id": "n-listreason",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t n-listreason",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y",
+  "reason": [
+   "x"
+  ]
+ },
+ {
+  "id": "n-liststatus",
+  "lane": "security",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "title": "t n-liststatus",
+  "location": "a.py:3",
+  "issue": "i",
+  "fix": "f",
+  "trigger": "x gives y",
+  "status": [
+   "todo"
+  ]
+ }
+]

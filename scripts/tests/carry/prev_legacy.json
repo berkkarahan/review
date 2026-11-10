@@ -1,0 +1,10 @@
+{
+  "pr": "example-org/example-repo#55",
+  "last_sha": "3333333333333333333333333333333333333333",
+  "findings": [
+    {"id": "H1", "severity": "HIGH", "location": "app/pay/charge.py:40", "locations": ["app/pay/charge.py:66"], "title": "Charge retried without idempotency key", "sources": ["call-bl-1", "perf-2"]},
+    {"id": "M1", "lane": "security", "severity": "MEDIUM", "location": "app/pay/hooks.py:9", "title": "Webhook body not size limited", "sources": ["security"]},
+    {"id": "Q1", "severity": "QUESTION", "location": "PR description", "title": "Which clients read the old field?", "sources": ["conventions"]}
+  ],
+  "previous": []
+}
