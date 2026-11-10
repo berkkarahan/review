@@ -49,7 +49,7 @@ def clean(text):
 
 
 def sentences(par):
-    return [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z\[`\"(])", par) if s.strip()]
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+(?=[A-Z\[`\"(*])", par) if s.strip()]
 
 
 def lint(text, findings=None):
@@ -98,7 +98,8 @@ def lint(text, findings=None):
                 if re.search(h, s, re.I):
                     issues.append((start, "hedge-or-chat-abbrev", re.search(h, s, re.I).group(0)))
     if findings:
-        for f in findings:
+        flist = findings.get("findings", []) if isinstance(findings, dict) else findings
+        for f in flist:
             locs = [f.get("location", "")] + list(f.get("locations", []))
             for loc in locs:
                 m = re.match(r"^([^\s:]+:\d+)", str(loc))
