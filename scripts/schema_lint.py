@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""Deterministic gates G1 (schema), G2 (in-diff), G3 (trigger), G4 (confidence).
+"""Deterministic gates G1 (schema), G2 (in-diff / codebase file-map), G3 (trigger), G4 (confidence).
 
-Usage: schema_lint.py <findings.json> <diff-map.json>
+Usage: schema_lint.py <findings.json> <diff-or-file-map.json> [--level PR|CODEBASE]
 Input: a JSON array of Finding objects (the lead converts each lane's YAML block).
 Output: JSON {"results": [{"id", "action", "reasons", "kept_locations"?}], "summary": {...}} on stdout.
 Exit code: 0 always when the input parses. The lead acts on `action`:
   keep       - finding passes all gates
   retry_lane - G1 failed: schema fields missing or invalid. Ask the lane once.
-  drop       - G2 failed (outside PR diff) or G4 failed (LOW confidence on MEDIUM/LOW).
+  drop       - G2 failed (outside PR diff or invalid codebase file/line) or G4 failed (LOW confidence on MEDIUM/LOW).
   downgrade  - G3 failed: no trigger on CRITICAL/HIGH. Cap at MEDIUM, or QUESTION.
 Optional fields (absent = no check): status todo|fixed|declined, origin new|existing,
 eval_disposition post|chat-only|drop, eval_downgraded bool, and the strings id,
 reopened_from, challenges, reason, commit, eval_reason. A bad value is a G1 failure.
 Stdlib only.
 """
+import argparse
 import json
 import re
 import sys
 
+REVIEW_LEVELS = ("PR", "CODEBASE")
 SEV = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "QUESTION"}
 CONF = {"HIGH", "MEDIUM", "LOW"}
 LANES = {"adherence", "business-logic", "code-quality", "security", "performance",
@@ -31,7 +33,7 @@ OPT_ENUM = {
 OPT_TEXT = ("reopened_from", "challenges", "reason", "commit", "eval_reason")
 LOC = re.compile(r"^(?P<path>[^\s:]+):(?P<a>\d+)(?:-(?P<b>\d+))?$")
 HUNK_LOC = re.compile(r"^(?P<path>[^\s:]+)\s+@@\s+-\d+(?:,\d+)?\s+\+(?P<a>\d+)(?:,(?P<count>\d+))?\s+@@")
-INTENT_LOC = re.compile(r"^(PR description|intent\.md\s+§.+)$")
+INTENT_LOC = re.compile(r"^(PR description|intent\.md\s+§.+|Codebase architecture)$")
 NEAR = 0  # a finding must sit on an added line. Raise to allow context lines nearby.
 
 
@@ -64,7 +66,28 @@ def on_changed_line(loc, dmap):
     return any(n in added or any(abs(n - x) <= NEAR for x in added) for n in range(a, b + 1))
 
 
-def check_detail(f, dmap):
+def on_valid_file_line(loc, file_map):
+    """Validate path:line[-end] against codebase file-map.json ({"path": {"lines": N}})."""
+    s = loc.strip()
+    m = LOC.match(s)
+    if not m:
+        return None
+    path = norm_path(m.group("path"))
+    a = int(m.group("a"))
+    b = int(m.group("b") or a)
+    if a < 1 or b < a:
+        return False
+    entry = file_map.get(path)
+    if entry is None:
+        return False
+    total = entry.get("lines") if isinstance(entry, dict) else (entry if isinstance(entry, int) else None)
+    if total is None:
+        return False
+    return b <= max(1, int(total))
+
+
+def check_detail(f, dmap, level="PR"):
+    level = str(level or "PR").upper()
     reasons = []
     for key in ("id", "lane", "severity", "confidence", "title", "location", "issue", "fix"):
         if not str(f.get(key, "")).strip():
@@ -89,7 +112,7 @@ def check_detail(f, dmap):
             reasons.append(f"G1 invalid {key}")
     if f.get("eval_downgraded") is not None and not isinstance(f["eval_downgraded"], bool):
         reasons.append("G1 invalid eval_downgraded")
-    if f.get("introduced_by_pr") == "pre-existing" and not reasons:
+    if level == "PR" and f.get("introduced_by_pr") == "pre-existing" and not reasons:
         return "drop", ["G2 pre-existing finding outside PR diff"], None
     if reasons:
         return "retry_lane", reasons, None
@@ -102,11 +125,14 @@ def check_detail(f, dmap):
     else:
         extra = f.get("locations") or []
         all_locs = [loc] + [str(x).strip() for x in extra]
-        verdicts = [on_changed_line(x, dmap) for x in all_locs]
+        loc_fn = on_valid_file_line if level == "CODEBASE" else on_changed_line
+        verdicts = [loc_fn(x, dmap) for x in all_locs]
         if verdicts[0] is None and not any(v is True for v in verdicts):
             return "retry_lane", ["G1 invalid location format (expected path:line): " + loc], None
         filtered = [x for x, v in zip(all_locs, verdicts) if v is True]
         if not filtered:
+            if level == "CODEBASE":
+                return "drop", ["G2 location is outside the codebase scope or line range: " + loc], None
             return "drop", ["G2 location is outside the PR diff: " + loc], None
         if len(filtered) < len(all_locs):
             kept_locs = filtered
@@ -125,19 +151,22 @@ def check_detail(f, dmap):
     return "keep", [], kept_locs
 
 
-def check(f, dmap):
-    action, reasons, _kept = check_detail(f, dmap)
+def check(f, dmap, level="PR"):
+    action, reasons, _kept = check_detail(f, dmap, level=level)
     return action, reasons
 
 
-def main():
-    if len(sys.argv) != 3:
-        sys.exit("usage: schema_lint.py <findings.json> <diff-map.json>")
-    findings = json.load(open(sys.argv[1], encoding="utf-8"))
-    dmap = json.load(open(sys.argv[2], encoding="utf-8"))
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="schema_lint.py", description=__doc__.splitlines()[0])
+    ap.add_argument("findings")
+    ap.add_argument("loc_map")
+    ap.add_argument("--level", type=str.upper, choices=REVIEW_LEVELS, default="PR")
+    args = ap.parse_args(argv)
+    findings = json.load(open(args.findings, encoding="utf-8"))
+    dmap = json.load(open(args.loc_map, encoding="utf-8"))
     results, summary = [], {}
     for f in findings:
-        action, reasons, kept_locs = check_detail(f, dmap)
+        action, reasons, kept_locs = check_detail(f, dmap, level=args.level)
         summary[action] = summary.get(action, 0) + 1
         row = {"id": f.get("id"), "action": action, "reasons": reasons}
         if kept_locs is not None and action in ("keep", "downgrade"):

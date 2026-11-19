@@ -110,6 +110,37 @@ def run_tests():
             and "kept_locations" not in out["results"][1],
             (p.returncode, out))
 
+        # CODEBASE level tests: file-map.json line bounds and pre-existing/codebase acceptance
+        fmap = {"a.py": {"lines": 25, "lang": "python"}, "b.py": {"lines": 10, "lang": "python"}}
+        act, rsn, kept = schema_lint.check_detail(base(location="a.py:20", introduced_by_pr="codebase"), fmap, level="CODEBASE")
+        chk("CODEBASE G2: valid file line with introduced_by_pr=codebase -> keep", act == "keep" and not rsn and kept is None, (act, rsn))
+
+        act, rsn, _ = schema_lint.check_detail(base(location="a.py:12", introduced_by_pr="pre-existing"), fmap, level="CODEBASE")
+        chk("CODEBASE G2: pre-existing finding kept at CODEBASE level", act == "keep" and not rsn, (act, rsn))
+
+        act, rsn, _ = schema_lint.check_detail(base(location="a.py:26"), fmap, level="CODEBASE")
+        chk("CODEBASE G2: line past EOF -> drop", act == "drop" and any("codebase scope or line range" in r for r in rsn), (act, rsn))
+
+        act, rsn, _ = schema_lint.check_detail(base(location="missing.py:1"), fmap, level="CODEBASE")
+        chk("CODEBASE G2: unknown file -> drop", act == "drop", (act, rsn))
+
+        act, rsn, kept = schema_lint.check_detail(base(location="a.py:99", locations=["b.py:5", "missing.py:1"]), fmap, level="CODEBASE")
+        chk("CODEBASE G2: mixed locations keep only valid file-map sites", act == "keep" and kept == ["b.py:5"], (act, rsn, kept))
+
+        act, rsn, _ = schema_lint.check_detail(base(lane="adherence", location="Codebase architecture"), fmap, level="CODEBASE")
+        chk("CODEBASE G2: adherence allows Codebase architecture intent location", act == "keep", (act, rsn))
+
+        fp_cb = os.path.join(td, "f_cb.json")
+        fm_cb = os.path.join(td, "fm_cb.json")
+        with open(fp_cb, "w", encoding="utf-8") as fh:
+            json.dump([base(id="cb-1", location="a.py:20", introduced_by_pr="codebase"), base(id="cb-2", location="a.py:99")], fh)
+        with open(fm_cb, "w", encoding="utf-8") as fh:
+            json.dump(fmap, fh)
+        p_cb = subprocess.run([sys.executable, "-I", "-B", SCRIPT, fp_cb, fm_cb, "--level", "CODEBASE"], capture_output=True, text=True)
+        out_cb = json.loads(p_cb.stdout)
+        chk("CLI --level CODEBASE: keeps valid file line and drops out-of-range",
+            p_cb.returncode == 0 and out_cb["summary"] == {"keep": 1, "drop": 1}, (p_cb.returncode, out_cb))
+
     fails = 0
     for name, ok, detail in checks:
         print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"  <- {detail}"))

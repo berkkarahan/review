@@ -32,8 +32,8 @@ A **framework-agnostic, codebase-aware, multi-lane code review skill** for AI co
 
 ## Key Capabilities
 
-- **Single `/review` Entrypoint:** Reviews a GitHub PR (by URL, `<owner>/<repo>#<N>`, or `#<N>`), automatically infers the open PR for the current branch via `gh pr view`, falls back to **local branch diff mode** against the base branch when no PR exists, or configures reviewer persona and preferences interactively.
-- **Strict PR-Diff Scoping:** Every finding is strictly bounded to lines added, modified, or removed in `diff.patch` (and PR-relevant promises). Pre-existing defects outside the diff are dropped deterministically by Gate `G2`, multi-PR/epic specs are scoped to this PR's changed deliverables, and broken-caller findings anchor on the causing diff line.
+- **Single `/review` Entrypoint with `level=PR|CODEBASE`:** Defaults strictly to **`level=PR`** (GitHub PR URL, `<owner>/<repo>#<N>`, `#<N>`, inferred open PR via `gh pr view`, or local branch diff fallback). When explicitly invoked with **`level=CODEBASE`** (optionally scoped to a repo-relative `<path>`), exhaustively audits the full codebase across all 7 specialist lanes (with automatic directory sharding on large repositories) to surface defects and concrete improvements.
+- **Strict Scope Enforcement (`PR` vs `CODEBASE`):** At `level=PR` (default), every finding is strictly bounded to lines added, modified, or removed in `diff.patch` (pre-existing defects are dropped deterministically by Gate `G2`, multi-PR/epic specs are scoped to PR deliverables, and broken-caller findings anchor on the causing diff line). At `level=CODEBASE`, Gate `G2` validates every `path:line` against `file-map.json` across the tracked repository snapshot.
 - **Framework-Agnostic Intent Chain:** Automatically extracts PR-relevant promises, requirements, and acceptance criteria (`ACRow`) from PR descriptions, commit messages, linked tracker tickets/issues (GitHub, Jira, Linear, YouTrack, MCP resources), and planned specification files across any spec-driven framework (`.kiro/specs/`, `.specify/`, `openspec/`, `_bmad/`, `.cursor/plans/`, `.claude/plans/`, `.gemini/`, `docs/specs/`, `PLAN.md`, `PRD.md`, etc.).
 - **Conditional Parallel Candidate Lanes with Zero Overlap:** Selects up to 6 concurrent specialist candidate lanes (`adherence`, `code-quality`, `security`, `performance`, `compatibility`, `robustness`, `conventions`) based on diff-shape and changed-file signals (`code-quality` and `conventions` run conditionally rather than blindly on docs/lockfile-only diffs) with strict concern ownership so lanes never duplicate work.
 - **Blind Independent Verification + Evaluation Lane (`G10`):** Every `CRITICAL` and `HIGH` finding—plus every `Missing` or `Contradicted` acceptance criterion—is re-checked at `head_sha` by an independent verifier subagent that receives only the claim, location, and trigger (never the lane's reasoning). Surviving candidates are never taken for granted: the Phase 2.3a **`evaluation` lane** (`reference/lanes/evaluation.md`) classifies each candidate as `post`, `chat-only`, or `drop` and recalibrates inflated severities while preserving the safety floor.
@@ -158,17 +158,22 @@ git clone https://github.com/berkkarahan/review.git .agent/skills/review
 /review #42 --no-inherit
 /review #42 --inline
 
-# 7. Configure reviewer persona, tone, house rules, or memory interactively
+# 7. Exhaustively audit the entire codebase (or a subdirectory) with all 7 lanes
+/review level=CODEBASE
+/review level=CODEBASE src/
+
+# 8. Configure reviewer persona, tone, house rules, or memory interactively
 /review configure my persona to use constructive tone and emphasize security and backward-compatibility
 ```
 
 ### Options & Flags Reference
 
-All options can be passed as explicit flags or stated in natural language:
+All options can be passed as explicit flags or stated in natural language (note: `level=CODEBASE` is **never** auto-enabled and must be set explicitly):
 
 | Option / Flag | Values / Syntax | Default | Behavior |
 | :--- | :--- | :--- | :--- |
-| `--effort` | `high \| medium \| low \| skim \| auto` | `auto` | Controls bundle depth, lane count, verifier subagents, Pareto cuts, and report length. See [Effort Profiles](#effort-profiles--the-five-core-invariants). |
+| `level` / `--level` | `PR \| CODEBASE` | `PR` | Sets review scope. Always `PR` unless explicitly set to `CODEBASE`. `CODEBASE` exhaustively audits the full repository (or optional `<path>` scope) with all 7 lanes (`auto → high`, automatic directory sharding for >30 files / >6k LOC, `file-map.json` Gate G2, codebase health verdict). |
+| `--effort` | `high \| medium \| low \| skim \| auto` | `auto` | Controls bundle depth, lane count, verifier subagents, Pareto cuts, and report length. Resolves to `high` at `level=CODEBASE` (`skim` disallowed at `CODEBASE`). See [Effort Profiles](#effort-profiles--the-five-core-invariants). |
 | `--since-last` | flag | auto-detected | Reviews the commit delta (`<last_sha>..<head_sha>`) when an earlier review exists and `last_sha` is an ancestor of `head_sha`. Automatically triggered when new commits are pushed. |
 | `--fresh` | flag | `false` | Ignores any earlier `findings.json` in `~/.claude/review/reviews/` and runs a clean full review without carry state. |
 | `--spec` | `<path-or-url>` | auto-discovered | Explicitly adds a planned document, spec, RFC, PRD, or URL to the Intent Chain (`Phase 0.4`). Ignored at `skim`. |
@@ -178,7 +183,7 @@ All options can be passed as explicit flags or stated in natural language:
 | `--no-tier` | flag | `false` | Disables `fast` model tiering on `low` and `skim` subagents, forcing `standard` (`inherit`). (`high` and `medium` always use `standard`/`inherit`.) |
 | `--post` | flag | interactive prompt | Proceeds directly to the Phase 4.3 GitHub review payload builder and confirmation flow after generating the report. |
 
-**Option Precedence:** `--effort` → `--lanes` → `--no-inherit` → `--inline` / small-PR mode → `--spec` → `--no-tier` → `--post`.
+**Option Precedence:** `level` / `--level` → `--effort` → `--lanes` → `--no-inherit` → `--inline` / small-PR mode → `--spec` → `--no-tier` → `--post`.
 
 ---
 
@@ -301,18 +306,18 @@ Gates keep false positives, low-signal noise, and out-of-diff findings out of th
 All scripts are standalone Python 3 modules using only the standard library:
 
 ```bash
-# 0. Build bundle, diff-map, signals, per-lane diff slices, carry prep & effort resolution in parallel threads
-python3 scripts/build_bundle.py [pr-url-or-number] [--effort auto|high|medium|low|skim] [--local-only]
+# 0. Build bundle, diff-map (or codebase file-map), signals, per-lane slices, carry prep & effort resolution
+python3 scripts/build_bundle.py [pr-url-or-number] [--level PR|CODEBASE] [--effort auto|high|medium|low|skim] [--local-only]
 
 # 1. Build a map of added and context right-side line numbers per file from a unified diff
 python3 scripts/diff_map.py <bundle_dir>/diff.patch > <bundle_dir>/diff-map.json
 
 # 2. Merge lane JSON outputs, run Gates G1-G5, prune locations, dedupe & split verify/eval queues
-python3 scripts/merge_findings.py merge <bundle_dir>
-python3 scripts/merge_findings.py finalize <bundle_dir> [--carry]
+python3 scripts/merge_findings.py merge <bundle_dir> [--level PR|CODEBASE]
+python3 scripts/merge_findings.py finalize <bundle_dir> [--level PR|CODEBASE] [--carry]
 
-# 3. Run deterministic Gates G1 (schema), G2 (in-diff), G3 (trigger), and G4 (confidence) standalone
-python3 scripts/schema_lint.py <bundle_dir>/findings.json <bundle_dir>/diff-map.json
+# 3. Run deterministic Gates G1 (schema), G2 (in-diff or codebase file-map), G3 (trigger), and G4 (confidence) standalone
+python3 scripts/schema_lint.py <bundle_dir>/findings.json <bundle_dir>/diff-map.json [--level PR|CODEBASE]
 
 # 3. Prepare, reconcile, and mark stateful findings across re-reviews (Gate G9)
 python3 scripts/carry_findings.py prepare <prev_findings.json|-> <bundle_dir>
@@ -430,7 +435,8 @@ review/
 ├── README.md                                 # Repository documentation
 ├── reference/                                # Modular phase and lane instructions (loaded on demand per Load Map)
 │   ├── bundle.md                             # Phase 0.3: Local clone detection, PR/branch bundle, signals, base rules
-│   ├── gates.md                              # Gates G0-G9 definitions, feedback log, and memory acquisition
+│   ├── codebase.md                           # On-demand exhaustive codebase review guide (level=CODEBASE)
+│   ├── gates.md                              # Gates G0-G10 definitions, feedback log, and memory acquisition
 │   ├── intent.md                             # Phase 0.4: Framework-agnostic spec, ticket, and promise discovery
 │   ├── persona.md                            # Configurable reviewer voice, emphasis, house rules (§8), learned prefs (§9)
 │   ├── carry/

@@ -33,7 +33,8 @@ Five rules hold at every level, `skim` included:
 ## Option precedence
 
 Apply options in this order (whether passed as flags or picked up from the user's request):
-1. `--effort` selects the profile (`high`, `medium`, `low`, `skim` or `auto`). When omitted, resolve with `auto` below.
+0. `level=PR|CODEBASE` (`--level=PR|CODEBASE`) selects review scope. **Default is always `PR` unless explicitly set.** At `CODEBASE` (`reference/codebase.md`), `--effort=auto` resolves to `high` (exhaustive across all 7 lanes, no micro-folding, auto-sharded for large repos), `--effort=skim` is rejected, and `--post` / `--inline` / `--since-last` do not apply.
+1. `--effort` selects the profile (`high`, `medium`, `low`, `skim` or `auto`). When omitted, resolve with `auto` below (or `high` when `level=CODEBASE`).
 2. `--lanes=a,b` sets the exact lane set at `high` and `medium`, and replaces the effort lane cap. At `low`, `--lanes` narrows the focus list of the single `critical-risk` lane (or of the inline pass) to those lanes' concerns. Effort still sets the verification, the Pareto cut and the report form. At `skim`, ignore `--lanes` and add this line to the plan: "`--lanes` has no effect at skim."
 3. `--no-inherit` runs `adherence` and `conventions` only. At `medium` this is 2 lanes. At `low` it removes the security and performance items from the `critical-risk` focus list. At `skim`, ignore it, because `skim` already inherits nothing. Add this line to the plan: "`--no-inherit` has no effect at skim."
 4. `--inline` and small-PR mode apply at `high` and `medium` as described in `lanes/selection.md` §Selection, inside the effort lane cap. At `low` the size threshold below replaces them. At `skim`, ignore `--inline`, because `skim` always uses one subagent. Add this line to the plan: "`--inline` has no effect at skim."

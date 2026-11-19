@@ -169,6 +169,102 @@ def run_tests():
         chk("docs-only diff skips code-quality and conventions",
             sel == ["adherence"], s_docs["lane_plan"])
 
+    # 4. CODEBASE level tests: default stays PR, kwarg/flag parsing, file-map, all 7 lanes, scope path, sharding, rejections
+    with tempfile.TemporaryDirectory() as td:
+        repo = os.path.join(td, "cb-repo")
+        os.makedirs(repo)
+        git(repo, "init", "-b", "main")
+        git(repo, "config", "user.email", "test@example.com")
+        git(repo, "config", "user.name", "Test")
+        write(repo, "README.md", "# Demo Service\nProvides auth and billing APIs.\n")
+        write(repo, "CLAUDE.md", "# Repo Rules\nAlways validate tenant IDs.\n")
+        write(repo, "docs/specs/arch.md", "# Architecture\nAC1: Use parameterized SQL.\n")
+        write(repo, ".env", "API_SECRET=do-not-read\n")
+        write(repo, "src/auth.py", "def verify_jwt(token):\n    return bool(token)\n")
+        write(repo, "src/db.py", "def run_query(conn, sql):\n    return conn.execute(sql)\n")
+        write(repo, "src/worker.py", "async def process_job(payload):\n    return await handle(payload)\n")
+        write(repo, "pkg/routes.py", "def v1_router(req):\n    return {'ok': True}\n")
+        write(repo, "tests/test_auth.py", "def test_ok():\n    assert True\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-m", "initial codebase")
+        # Second commit so local-only PR default also works cleanly
+        write(repo, "src/auth.py", "def verify_jwt(token):\n    return token is not None\n")
+        git(repo, "add", "src/auth.py")
+        git(repo, "commit", "-m", "tweak auth")
+
+        # Default level without flag MUST be PR
+        b_def = os.path.join(td, "b-default")
+        p_def = subprocess.run(
+            [sys.executable, "-I", "-B", SCRIPT, "--cwd", repo, "--bundle-dir", b_def, "--local-only"],
+            capture_output=True, text=True,
+        )
+        s_def = json.loads(p_def.stdout)
+        chk("default level is always PR unless explicitly set",
+            p_def.returncode == 0 and s_def["level"] == "PR" and s_def["target_mode"] == "local_branch", s_def)
+
+        # Bare kwarg `level=CODEBASE` works
+        b_cb = os.path.join(td, "b-cb")
+        p_cb = subprocess.run(
+            [sys.executable, "-I", "-B", SCRIPT, "level=CODEBASE", "--cwd", repo, "--bundle-dir", b_cb],
+            capture_output=True, text=True,
+        )
+        chk("CODEBASE kwarg level=CODEBASE exits 0", p_cb.returncode == 0, p_cb.stderr)
+        s_cb = json.loads(p_cb.stdout)
+        chk("CODEBASE sets level=CODEBASE, target_mode=codebase, effort=high",
+            s_cb["level"] == "CODEBASE" and s_cb["target_mode"] == "codebase" and s_cb["effort"]["resolved"] == "high",
+            s_cb["effort"])
+
+        fmap = json.load(open(os.path.join(b_cb, "file-map.json")))
+        chk("CODEBASE file-map.json tracks repo files and excludes .env",
+            "src/auth.py" in fmap and "pkg/routes.py" in fmap and ".env" not in fmap and fmap["src/auth.py"]["lines"] == 2,
+            fmap)
+        chk("CODEBASE discovers CLAUDE.md in rules-discovered.txt",
+            "CLAUDE.md" in s_cb["rules_discovered"] and os.path.isfile(os.path.join(b_cb, "rules-discovered.txt")),
+            s_cb["rules_discovered"])
+        sel_cb = [x["lane"] for x in s_cb["lane_plan"]["selected"]]
+        expected_7 = {"adherence", "code-quality", "conventions", "security", "performance", "compatibility", "robustness"}
+        chk("CODEBASE auto->high selects all 7 lanes with no folding",
+            set(sel_cb) == expected_7 and not s_cb["lane_plan"]["folded"], s_cb["lane_plan"])
+        chk("CODEBASE writes per-lane .files.txt lists",
+            all(os.path.isfile(os.path.join(b_cb, "lanes", f"{ln}.files.txt")) for ln in expected_7))
+
+        # Subtree path scoping
+        b_sub = os.path.join(td, "b-sub")
+        p_sub = subprocess.run(
+            [sys.executable, "-I", "-B", SCRIPT, "src/", "--level=CODEBASE", "--cwd", repo, "--bundle-dir", b_sub],
+            capture_output=True, text=True,
+        )
+        s_sub = json.loads(p_sub.stdout)
+        fmap_sub = json.load(open(os.path.join(b_sub, "file-map.json")))
+        chk("CODEBASE scope path src/ limits file-map to src/",
+            p_sub.returncode == 0 and s_sub["codebase"]["scope_path"] == "src"
+            and set(fmap_sub.keys()) == {"src/auth.py", "src/db.py", "src/worker.py"}, fmap_sub)
+
+        # Deterministic directory sharding when threshold exceeded
+        b_sh = os.path.join(td, "b-shard")
+        p_sh = subprocess.run(
+            [sys.executable, "-I", "-B", SCRIPT, "--level=CODEBASE", "--cwd", repo, "--bundle-dir", b_sh, "--shard-max-files", "2"],
+            capture_output=True, text=True,
+        )
+        s_sh = json.loads(p_sh.stdout)
+        cq_entries = [x for x in s_sh["lane_plan"]["selected"] if x["lane"] == "code-quality"]
+        chk("CODEBASE shards large code-quality lane deterministically",
+            p_sh.returncode == 0 and len(cq_entries) >= 2 and all("shard" in e for e in cq_entries)
+            and all(os.path.isfile(os.path.join(b_sh, e["files_list"])) for e in cq_entries), cq_entries)
+
+        # Reject --effort=skim and PR URLs at CODEBASE
+        p_bad_eff = subprocess.run(
+            [sys.executable, "-I", "-B", SCRIPT, "--level=CODEBASE", "--effort=skim", "--cwd", repo, "--bundle-dir", b_cb],
+            capture_output=True, text=True,
+        )
+        chk("CODEBASE rejects --effort=skim", p_bad_eff.returncode == 2 and "skim" in p_bad_eff.stderr, p_bad_eff.stderr)
+
+        p_bad_tgt = subprocess.run(
+            [sys.executable, "-I", "-B", SCRIPT, "https://github.com/octo/demo/pull/1", "--level=CODEBASE", "--cwd", repo, "--bundle-dir", b_cb],
+            capture_output=True, text=True,
+        )
+        chk("CODEBASE rejects PR URL target", p_bad_tgt.returncode == 2 and "PR target" in p_bad_tgt.stderr, p_bad_tgt.stderr)
+
     fails = 0
     for name, ok, detail in checks:
         print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"  <- {detail}"))

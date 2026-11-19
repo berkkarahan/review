@@ -59,12 +59,14 @@ STE does not apply to lane prompts, verifier prompts, `intent.md` or other inter
 |---|---|
 | Verdict REQUEST CHANGES / APPROVE WITH COMMENTS / APPROVE | "Not ready to merge" / "Ready to merge after the comments" / "Ready to merge" |
 | Verdict when `author_is_me` | "Not ready for review" / "Ready for review" |
+| Verdict at `level=CODEBASE` (`NEEDS ACTION` / `IMPROVEMENTS RECOMMENDED` / `HEALTHY`) | "Codebase needs urgent fixes" / "Codebase needs targeted improvements" / "Codebase is in good shape" |
 | CRITICAL and HIGH section | "Must fix (CRITICAL, HIGH)" |
-| MEDIUM section | "Fix before merge or soon after (MEDIUM)" |
-| LOW section | "Does not block merge (LOW)" |
-| Folded LOW line | "Minor items that do not block merge: <a>, <b>, <c>." |
-| Chat-only list | "Not posted (chat only):" |
-| Breaking changes | "⚠️ Changes that break consumers" |
+| MEDIUM section (`PR` / `CODEBASE`) | "Fix before merge or soon after (MEDIUM)" / "Recommended improvements (MEDIUM)" |
+| LOW section (`PR` / `CODEBASE`) | "Does not block merge (LOW)" / "Low-priority improvements (LOW)" |
+| Folded LOW line (`PR` / `CODEBASE`) | "Minor items that do not block merge: <a>, <b>, <c>." / "Minor improvements: <a>, <b>, <c>." |
+| Chat-only list (`PR` / `CODEBASE`) | "Not posted (chat only):" / "Additional notes (chat only):" |
+| Questions section (`PR` / `CODEBASE`) | "Questions for the author" / "Open questions" |
+| Breaking changes (`PR` / `CODEBASE`) | "⚠️ Changes that break consumers" / "⚠️ Contract and compatibility risks" |
 | Out-of-scope bullets | "**Out of scope or not expected:**" |
 | PR claims | "**PR claims that the evidence does not support:**" |
 | STE acknowledgement (last line of the posted review body, one time only) | "This review uses ASD-STE100 Simplified Technical English (STE): https://www.asd-ste100.org/" |

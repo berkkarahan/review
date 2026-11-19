@@ -209,6 +209,103 @@ def run_tests():
             rc6 == 0 and f_par["pareto"] is not None and f_par["pareto"]["shown"] < f_par["pareto"]["total"]
             and os.path.isfile(os.path.join(td3, "pareto.json")), f_par["pareto"])
 
+        # Test CODEBASE level end-to-end: file-map.json G2, sharded lane aggregation, HEALTHY fast path, NEEDS ACTION
+        td_cb = os.path.join(td, "codebase")
+        os.makedirs(td_cb)
+        write_json(os.path.join(td_cb, "file-map.json"), {
+            "src/auth.py": {"lines": 40, "lang": "python"},
+            "src/db.py": {"lines": 30, "lang": "python"},
+        })
+        write_json(os.path.join(td_cb, "existing-comments.json"), {"inline": [], "reviews": []})
+        write_json(os.path.join(td_cb, "bundle-summary.json"), {
+            "level": "CODEBASE",
+            "effort": {"resolved": "high"},
+            "pr": {"owner": "octo", "repo": "demo", "number": 0, "head_sha": "d" * 40, "author_is_me": True},
+            "lane_plan": {"folded": []}, "rules_changed": [],
+        })
+        write_json(os.path.join(td_cb, "raw-lanes.json"), [
+            {
+                "lane": "security",
+                "findings": [
+                    make_f("s-1", "security", "CRITICAL", "src/auth.py:12", "Missing tenant scope", "Query omits tenant filter.", introduced_by_pr="codebase"),
+                    make_f("s-oob", "security", "HIGH", "src/auth.py:999", "Out of bounds line", "Line past EOF.", introduced_by_pr="codebase"),
+                ],
+            },
+            {
+                "lane": "code-quality",
+                "shard": "code-quality-shard-1",
+                "findings": [
+                    make_f("cq-s1", "code-quality", "MEDIUM", "src/db.py:10", "Unclosed cursor", "Cursor leaks on exception.", introduced_by_pr="codebase"),
+                ],
+            },
+            {
+                "lane": "code-quality",
+                "shard": "code-quality-shard-2",
+                "status": "NOT ASSESSED",
+                "reason": "timeout on shard 2",
+                "findings": [],
+            },
+        ])
+        buf_cbm = io.StringIO()
+        sys.stdout = buf_cbm
+        try:
+            rc_cbm = mf.main(["merge", td_cb])
+        finally:
+            sys.stdout = old_stdout
+        cb_m = json.loads(buf_cbm.getvalue())
+        cb_pre = json.load(open(os.path.join(td_cb, "merged-pre-verify.json")))
+        cq_lane_row = next(ln for ln in cb_pre["lanes"] if ln["lane"] == "code-quality")
+        chk("CODEBASE merge validates against file-map.json and drops line past EOF",
+            rc_cbm == 0 and cb_m["level"] == "CODEBASE" and cb_m["gate_counts"]["g2_out_of_diff"] == 1
+            and cb_m["merged_count"] == 2, cb_m)
+        chk("CODEBASE merge aggregates sharded lane failure to NOT ASSESSED",
+            cq_lane_row["status"] == "NOT ASSESSED" and "shard-2" in cq_lane_row["reason"], cq_lane_row)
+
+        write_json(os.path.join(td_cb, "verifier-results.json"), [
+            {"id": "s-1", "verdict": "confirmed", "reason": "Confirmed at src/auth.py:12."},
+        ])
+        write_json(os.path.join(td_cb, "eval-results.json"), {
+            "evaluations": [{"id": "cq-s1", "disposition": "post", "eval_reason": "Real resource leak."}],
+        })
+        buf_cbf = io.StringIO()
+        sys.stdout = buf_cbf
+        try:
+            rc_cbf = mf.main(["finalize", td_cb])
+        finally:
+            sys.stdout = old_stdout
+        cb_f = json.loads(buf_cbf.getvalue())
+        chk("CODEBASE finalize returns NEEDS ACTION, event NONE, and incomplete flag from shard failure",
+            rc_cbf == 0 and cb_f["level"] == "CODEBASE" and cb_f["verdict"] == "NEEDS ACTION"
+            and cb_f["event"] == "NONE" and not cb_f["complete"], cb_f)
+
+        # Clean CODEBASE review -> HEALTHY + zero_findings_fast_path
+        td_cb2 = os.path.join(td, "codebase-clean")
+        os.makedirs(td_cb2)
+        write_json(os.path.join(td_cb2, "file-map.json"), {"src/auth.py": {"lines": 40, "lang": "python"}})
+        write_json(os.path.join(td_cb2, "existing-comments.json"), {"inline": [], "reviews": []})
+        write_json(os.path.join(td_cb2, "bundle-summary.json"), {
+            "level": "CODEBASE", "effort": {"resolved": "high"},
+            "pr": {"owner": "octo", "repo": "demo", "number": 0, "head_sha": "e" * 40, "author_is_me": True},
+            "lane_plan": {"folded": []}, "rules_changed": [],
+        })
+        write_json(os.path.join(td_cb2, "raw-lanes.json"), [
+            {"lane": "adherence", "findings": [], "ac_matrix": []},
+            {"lane": "code-quality", "findings": []},
+        ])
+        buf_cb2 = io.StringIO()
+        sys.stdout = buf_cb2
+        try:
+            mf.main(["merge", td_cb2])
+            buf_cb2f = io.StringIO()
+            sys.stdout = buf_cb2f
+            rc_cb2f = mf.main(["finalize", td_cb2])
+        finally:
+            sys.stdout = old_stdout
+        cb2_f = json.loads(buf_cb2f.getvalue())
+        chk("CODEBASE zero-findings sets HEALTHY, event NONE, zero_findings_fast_path=True",
+            rc_cb2f == 0 and cb2_f["verdict"] == "HEALTHY" and cb2_f["event"] == "NONE" and cb2_f["zero_findings_fast_path"],
+            cb2_f)
+
     fails = 0
     for name, ok, detail in checks:
         print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"  <- {detail}"))

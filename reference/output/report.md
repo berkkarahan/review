@@ -2,7 +2,7 @@
 
 ## Report (Phase 4)
 
-Print this to chat. Omit any section that would be empty, except Context. Write all free text in STE. The headings below are the fixed STE headings.
+Print this to chat at `level=PR` (default). At `level=CODEBASE`, use the codebase report template in `reference/codebase.md` §Phase 3 & 4. Omit any section that would be empty, except Context. Write all free text in STE. The headings below are the fixed STE headings.
 
 ```markdown
 ## <🔴|🟡|🟢> <verdict phrase from §Simplified Technical English> — <owner>/<repo>#<N> · <PR title>

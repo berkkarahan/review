@@ -2,9 +2,9 @@
 """Deterministic Phase 2 merge, gates G1-G5, dedupe, verifier batching, evaluation finalize, Carry G9, Breaker, and Pareto cut.
 
 Usage:
-  merge_findings.py merge    <bundle_dir> [--raw <raw-lanes.json>] [--effort high|medium|low|skim]
+  merge_findings.py merge    <bundle_dir> [--raw <raw-lanes.json>] [--effort high|medium|low|skim] [--level PR|CODEBASE]
   merge_findings.py finalize <bundle_dir> [--verifier <verifier-results.json>] [--eval <eval-results.json>]
-                             [--effort high|medium|low|skim] [--hold-event REQUEST_CHANGES|COMMENT]
+                             [--effort high|medium|low|skim] [--level PR|CODEBASE] [--hold-event REQUEST_CHANGES|COMMENT]
                              [--author-is-me] [--in-profile] [--ci <value>] [--carry] [--still-open <file>]
 
 Imports sibling schema_lint, carry_findings, and breaker in-process (zero subprocess calls).
@@ -232,11 +232,11 @@ def first_sentence(text):
     return m[0] if m else s
 
 
-def build_verify_batches(findings, ac_rows, effort):
+def build_verify_batches(findings, ac_rows, effort, level="PR"):
     """Group CRITICAL/HIGH findings and Missing/Contradicted ACs by file into capped blind-verifier batches."""
     if effort in ("low", "skim"):
         return []
-    cap = 2 if effort == "medium" else 6
+    cap = 2 if effort == "medium" else (8 if level == "CODEBASE" else 6)
     by_file = {}
     for f in findings:
         if f.get("severity") not in ("CRITICAL", "HIGH"):
@@ -278,6 +278,44 @@ def build_verify_batches(findings, ac_rows, effort):
     return batches
 
 
+def aggregate_lanes_meta(raw_lanes_meta):
+    """Collapse sharded lane entries by logical lane name for breaker.py while preserving failure propagation."""
+    grouped = {}
+    order = []
+    for m in raw_lanes_meta:
+        ln = m["lane"]
+        if ln not in grouped:
+            grouped[ln] = []
+            order.append(ln)
+        grouped[ln].append(m)
+
+    out = []
+    for ln in order:
+        items = grouped[ln]
+        if len(items) == 1:
+            one = {k: v for k, v in items[0].items() if k != "shard"}
+            out.append(one)
+            continue
+        failed = [x for x in items if x.get("status") in ("NOT ASSESSED", "failed")]
+        abstained = [x for x in items if x.get("status") == "abstained"]
+        hr = next((x["high_risk"] for x in items if x.get("high_risk")), None)
+        if failed:
+            reasons = [
+                f"{x.get('shard') or ln}: {x.get('reason') or 'shard failed'}"
+                for x in failed
+            ]
+            row = {"lane": ln, "status": "NOT ASSESSED", "reason": "; ".join(reasons)}
+        elif len(abstained) == len(items):
+            reasons = [x.get("reason") or "abstained" for x in abstained]
+            row = {"lane": ln, "status": "abstained", "reason": "; ".join(dict.fromkeys(reasons))}
+        else:
+            row = {"lane": ln, "status": "returned"}
+        if hr:
+            row["high_risk"] = hr
+        out.append(row)
+    return out
+
+
 def cmd_merge(args):
     bundle_dir = os.path.abspath(args.bundle_dir)
     raw_path = args.raw or os.path.join(bundle_dir, "raw-lanes.json")
@@ -285,14 +323,20 @@ def cmd_merge(args):
     if raw_obj is None:
         sys.stderr.write(f"merge_findings: raw lanes file not found: {raw_path}\n")
         return 2
-    dmap = load_json(os.path.join(bundle_dir, "diff-map.json"), default={})
-    existing = load_json(os.path.join(bundle_dir, "existing-comments.json"), default={"inline": [], "reviews": []})
     summary_doc = load_json(os.path.join(bundle_dir, "bundle-summary.json"), default={})
+    level = str(getattr(args, "level", None) or summary_doc.get("level") or "PR").upper()
+    if level == "CODEBASE":
+        loc_map = load_json(os.path.join(bundle_dir, "file-map.json"))
+        if loc_map is None:
+            loc_map = load_json(os.path.join(bundle_dir, "diff-map.json"), default={})
+    else:
+        loc_map = load_json(os.path.join(bundle_dir, "diff-map.json"), default={})
+    existing = load_json(os.path.join(bundle_dir, "existing-comments.json"), default={"inline": [], "reviews": []})
     effort = args.effort or (summary_doc.get("effort") or {}).get("resolved") or "high"
     folded = [x.get("lane") for x in ((summary_doc.get("lane_plan") or {}).get("folded") or []) if isinstance(x, dict) and x.get("lane")]
 
     lane_entries = load_raw_lanes(raw_obj)
-    lanes_meta = []
+    raw_lanes_meta = []
     retry_lanes = {}
     ac_matrix = []
     high_risk = []
@@ -307,13 +351,15 @@ def cmd_merge(args):
         lname = le.get("lane") or "unknown"
         lstatus = le.get("status") or "returned"
         meta = {"lane": lname, "status": lstatus}
+        if le.get("shard"):
+            meta["shard"] = le["shard"]
         if le.get("reason"):
             meta["reason"] = le["reason"]
         if le.get("high_risk"):
             meta["high_risk"] = le["high_risk"]
             if le["high_risk"] not in high_risk:
                 high_risk.append(le["high_risk"])
-        lanes_meta.append(meta)
+        raw_lanes_meta.append(meta)
 
         for sa in le.get("safety_alerts") or []:
             if sa and str(sa).lower() != "none" and sa not in safety_alerts:
@@ -345,9 +391,10 @@ def cmd_merge(args):
             if isinstance(f.get("locations"), list):
                 f["locations"] = [norm_loc(x) for x in f["locations"]]
 
-            action, reasons, kept_locs = schema_lint.check_detail(f, dmap)
+            action, reasons, kept_locs = schema_lint.check_detail(f, loc_map, level=level)
             if action == "retry_lane":
-                retry_lanes.setdefault(lname, []).append({"id": f.get("id"), "reasons": reasons})
+                retry_key = le.get("shard") or lname
+                retry_lanes.setdefault(retry_key, []).append({"id": f.get("id"), "reasons": reasons})
                 continue
             if action == "drop":
                 if any(r.startswith("G2") for r in reasons):
@@ -366,31 +413,34 @@ def cmd_merge(args):
                 f["severity"] = "QUESTION" if f.get("confidence") == "LOW" else "MEDIUM"
             f["in_diff"] = not bool(schema_lint.INTENT_LOC.match(str(f.get("location", ""))))
 
-            # Gate G5 (already raised)
-            if matches_existing_comment(f, existing):
+            # Gate G5 (already raised — PR mode only)
+            if level == "PR" and matches_existing_comment(f, existing):
                 counts["g5_already_raised"] += 1
                 continue
             surviving.append(f)
 
-    # Rules-changed automatic high_risk
-    if summary_doc.get("rules_changed") and "rule files edited" not in high_risk:
+    # Rules-changed automatic high_risk (PR mode only)
+    if level == "PR" and summary_doc.get("rules_changed") and "rule files edited" not in high_risk:
         high_risk.append("rule files edited")
 
+    lanes_meta = aggregate_lanes_meta(raw_lanes_meta)
     merged = dedupe_findings(surviving)
     # Remove any cleared entry whose id was raised again
     raised_ids = {f.get("id") for f in merged if f.get("id")}
     cleared = [c for c in raw_cleared if c.get("id") not in raised_ids]
 
-    verify_batches = build_verify_batches(merged, ac_matrix, effort)
+    verify_batches = build_verify_batches(merged, ac_matrix, effort, level=level)
     nonblocking = [f for f in merged if f.get("severity") in ("MEDIUM", "LOW", "QUESTION")]
     blocking = [f for f in merged if f.get("severity") in ("CRITICAL", "HIGH")]
 
     pre_verify_doc = {
+        "level": level,
         "effort": effort,
         "pr": summary_doc.get("pr") or {},
         "raw_count": raw_count,
         "gate_counts": counts,
         "lanes": lanes_meta,
+        "shards": [m for m in raw_lanes_meta if m.get("shard")],
         "folded": folded,
         "findings": merged,
         "ac_matrix": ac_matrix,
@@ -407,6 +457,7 @@ def cmd_merge(args):
     })
 
     out = {
+        "level": level,
         "effort": effort,
         "raw_count": raw_count,
         "merged_count": len(merged),
@@ -478,6 +529,7 @@ def cmd_finalize(args):
         sys.stderr.write("merge_findings: merged-pre-verify.json not found; run merge first\n")
         return 2
     summary_doc = load_json(os.path.join(bundle_dir, "bundle-summary.json"), default={})
+    level = str(getattr(args, "level", None) or pre_doc.get("level") or summary_doc.get("level") or "PR").upper()
     effort = args.effort or pre_doc.get("effort") or "high"
     pr_meta = summary_doc.get("pr") or pre_doc.get("pr") or {}
 
@@ -590,13 +642,18 @@ def cmd_finalize(args):
     prev_findings_for_breaker = None
     breaker_findings = post_findings
     prev_path = os.path.join(bundle_dir, "previous.json")
+    pr_ident = (
+        f"{pr_meta.get('owner', 'local')}/{pr_meta.get('repo', 'repo')}#codebase"
+        if level == "CODEBASE"
+        else f"{pr_meta.get('owner', 'local')}/{pr_meta.get('repo', 'repo')}#{pr_meta.get('number', 0)}"
+    )
     if args.carry and os.path.isfile(prev_path):
         prev_state, _, prev_warnings = carry_findings.load_previous(prev_path)
         still_open = load_json(args.still_open, default=[]) if args.still_open else []
         if isinstance(still_open, dict):
             still_open = still_open.get("still_open") or []
         extra = {
-            "pr": f"{pr_meta.get('owner', 'local')}/{pr_meta.get('repo', 'repo')}#{pr_meta.get('number', 0)}",
+            "pr": pr_ident,
             "last_sha": pr_meta.get("head_sha"),
             "previous": [],
         }
@@ -625,7 +682,7 @@ def cmd_finalize(args):
             counters[ltr] = counters.get(ltr, 0) + 1
             f["display_id"] = f"{ltr}{counters[ltr]}"
         write_json(os.path.join(bundle_dir, "findings.json"), {
-            "pr": f"{pr_meta.get('owner', 'local')}/{pr_meta.get('repo', 'repo')}#{pr_meta.get('number', 0)}",
+            "pr": pr_ident,
             "last_sha": pr_meta.get("head_sha"),
             "findings": post_findings,
             "previous": [],
@@ -634,6 +691,7 @@ def cmd_finalize(args):
 
     # 4. Run breaker in-process
     merged_doc = {
+        "level": level,
         "findings": breaker_findings,
         "ac_matrix": ac_matrix,
         "lanes": lanes,
@@ -643,6 +701,7 @@ def cmd_finalize(args):
     write_json(os.path.join(bundle_dir, "breaker-input.json"), merged_doc)
 
     breaker_opts = {
+        "level": level,
         "effort": effort,
         "hold_event": args.hold_event or ((summary_doc.get("persona") or {}).get("voice") or {}).get("hold_event") or "REQUEST_CHANGES",
         "author_is_me": bool(args.author_is_me or pr_meta.get("author_is_me")),
@@ -664,6 +723,7 @@ def cmd_finalize(args):
     result = {
         "valid": verdict_out["valid"],
         "invalid": verdict_out["invalid"],
+        "level": level,
         "effort": effort,
         "verdict": verdict_out["verdict"],
         "emoji": verdict_out["emoji"],
@@ -681,7 +741,7 @@ def cmd_finalize(args):
             "refuted": refuted_count,
             **(pre_doc.get("gate_counts") or {}),
         },
-        "zero_findings_fast_path": len(post_findings) == 0 and len(chat_only_findings) == 0 and verdict_out["verdict"] == "APPROVE",
+        "zero_findings_fast_path": len(post_findings) == 0 and len(chat_only_findings) == 0 and verdict_out["verdict"] in ("APPROVE", "HEALTHY"),
         "floor_overrides": floor_overrides,
         "eval_followup_needed": eval_followup_needed,
         "high_risk": pre_doc.get("high_risk") or [],
@@ -702,12 +762,14 @@ def main(argv=None):
     p_m.add_argument("bundle_dir")
     p_m.add_argument("--raw")
     p_m.add_argument("--effort", choices=("high", "medium", "low", "skim"))
+    p_m.add_argument("--level", type=str.upper, choices=("PR", "CODEBASE"))
 
     p_f = sub.add_parser("finalize")
     p_f.add_argument("bundle_dir")
     p_f.add_argument("--verifier")
     p_f.add_argument("--eval")
     p_f.add_argument("--effort", choices=("high", "medium", "low", "skim"))
+    p_f.add_argument("--level", type=str.upper, choices=("PR", "CODEBASE"))
     p_f.add_argument("--hold-event", dest="hold_event", choices=("REQUEST_CHANGES", "COMMENT"))
     p_f.add_argument("--author-is-me", dest="author_is_me", action="store_true")
     p_f.add_argument("--in-profile", dest="in_profile", action="store_true")

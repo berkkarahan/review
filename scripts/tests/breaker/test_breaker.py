@@ -393,6 +393,38 @@ def cli_cases():
         r = run(bare, "--effort", "low")
         res.append(("cli: bare array input works at low", [] if r.returncode == 0 and json.loads(r.stdout)["verdict"] == AP
                     else [f"rc={r.returncode} {r.stderr}"]))
+
+        # CODEBASE level cases
+        cb_crit = write("cb_crit.json", {"findings": [F("CRITICAL", introduced_by_pr="pre-existing")], "lanes": L(*FULL)})
+        r = run(cb_crit, "--level", "CODEBASE")
+        j = json.loads(r.stdout)
+        res.append(("cli CODEBASE: pre-existing CRITICAL counts -> NEEDS ACTION, event NONE",
+                    [] if r.returncode == 0 and j["level"] == "CODEBASE" and j["verdict"] == "NEEDS ACTION"
+                    and j["phrase"] == "Codebase needs urgent fixes" and j["event"] == "NONE" and j["open"]["critical"] == 1
+                    else [f"rc={r.returncode} out={j}"]))
+
+        cb_med = write("cb_med.json", {"findings": [F("MEDIUM", introduced_by_pr="codebase")], "lanes": L(*FULL)})
+        r = run(cb_med, "--level", "CODEBASE")
+        j = json.loads(r.stdout)
+        res.append(("cli CODEBASE: MEDIUM -> IMPROVEMENTS RECOMMENDED, event NONE",
+                    [] if r.returncode == 0 and j["verdict"] == "IMPROVEMENTS RECOMMENDED"
+                    and j["phrase"] == "Codebase needs targeted improvements" and j["event"] == "NONE"
+                    else [f"rc={r.returncode} out={j}"]))
+
+        cb_ok = write("cb_ok.json", {"findings": [F("LOW", introduced_by_pr="codebase")], "lanes": L(*FULL)})
+        r = run(cb_ok, "--level", "CODEBASE")
+        j = json.loads(r.stdout)
+        res.append(("cli CODEBASE: only LOW -> HEALTHY, event NONE",
+                    [] if r.returncode == 0 and j["verdict"] == "HEALTHY"
+                    and j["phrase"] == "Codebase is in good shape" and j["event"] == "NONE"
+                    else [f"rc={r.returncode} out={j}"]))
+
+        cb_inc = write("cb_inc.json", {"findings": [], "lanes": L("adherence", "code-quality", security="NOT ASSESSED")})
+        r = run(cb_inc, "--level", "CODEBASE")
+        j = json.loads(r.stdout)
+        res.append(("cli CODEBASE: NOT ASSESSED caps HEALTHY to IMPROVEMENTS RECOMMENDED",
+                    [] if r.returncode == 0 and j["verdict"] == "IMPROVEMENTS RECOMMENDED" and not j["complete"]
+                    else [f"rc={r.returncode} out={j}"]))
     return res
 
 

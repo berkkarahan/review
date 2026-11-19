@@ -39,7 +39,7 @@ ID = re.compile(r"\b(?:FR|NFR|AC|B|P|OQ|AD|PD|R|C|H|M|L|Q)-?\d+[\w.-]*\b|\b[A-Z]
 QUOTE = re.compile(r'"[^"\n]*"|“[^”\n]*”')
 PATHLIKE = re.compile(r"\S+[/.]\S*\.\w+(?::\d+(?:-\d+)?)?|\S+:\d+(?:-\d+)?")
 PREFIX = re.compile(r"^\s*(?:[-*]\s+|\d+\.\s+|>\s*)*(?:\[[A-Z]+ / [A-Z]+\]\s*|NIT:\s*)?")
-QUESTIONS_HEADING = re.compile(r"^#{1,6}\s+Questions for the author\b", re.I)
+QUESTIONS_HEADING = re.compile(r"^#{1,6}\s+(?:Questions for the (?:author|maintainers)|Open questions)\b", re.I)
 LIST_ITEM = re.compile(r"^\s*(?:\d+\.|[-*])\s+")
 Q_LABEL_PREFIX = re.compile(
     r"^\s*(?:\d+\.|[-*])\s+"

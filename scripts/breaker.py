@@ -51,6 +51,7 @@ import re
 import sys
 
 LEVELS = ("high", "medium", "low", "skim")
+REVIEW_LEVELS = ("PR", "CODEBASE")
 SEVS = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "QUESTION")
 RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "QUESTION": 0}
 AC_STATUS = {"Met", "Partial", "Missing", "Contradicted", "Not verifiable"}
@@ -79,6 +80,16 @@ PHRASE = {
     "APPROVE WITH COMMENTS": ("🟡", "Ready to merge after the comments", "Ready for review"),
     "APPROVE": ("🟢", "Ready to merge", "Ready for review"),
 }
+CODEBASE_VERDICT_MAP = {
+    "REQUEST CHANGES": "NEEDS ACTION",
+    "APPROVE WITH COMMENTS": "IMPROVEMENTS RECOMMENDED",
+    "APPROVE": "HEALTHY",
+}
+CODEBASE_PHRASE = {
+    "NEEDS ACTION": ("🔴", "Codebase needs urgent fixes"),
+    "IMPROVEMENTS RECOMMENDED": ("🟡", "Codebase needs targeted improvements"),
+    "HEALTHY": ("🟢", "Codebase is in good shape"),
+}
 LOW_HIGH_PHRASE = "Fix the HIGH items before merge"
 LOW_NONE_PHRASE = ("No CRITICAL or HIGH issues found. "
                    "This review did not examine MEDIUM or LOW issues.")
@@ -100,12 +111,12 @@ def origin_of(f):
     return f.get("origin") or "new"
 
 
-def excluded(f):
-    return (
-        f.get("verified") == "refuted"
-        or f.get("introduced_by_pr") == "pre-existing"
-        or f.get("eval_disposition") in ("drop", "chat-only")
-    )
+def excluded(f, level="PR"):
+    if f.get("verified") == "refuted" or f.get("eval_disposition") in ("drop", "chat-only"):
+        return True
+    if level == "PR" and f.get("introduced_by_pr") == "pre-existing":
+        return True
+    return False
 
 
 def tokens(text):
@@ -138,7 +149,7 @@ def lane_state(entry):
     return "NOT ASSESSED" if entry.get("status") in NOT_ASSESSED else entry.get("status") or "returned"
 
 
-def validate(findings, ac_rows, lanes, effort, invalid):
+def validate(findings, ac_rows, lanes, effort, invalid, level="PR"):
     """Structure and enum checks, including the optional contract fields."""
     seen = set()
     for i, f in enumerate(findings):
@@ -166,7 +177,7 @@ def validate(findings, ac_rows, lanes, effort, invalid):
             invalid.append(f"{fid}: eval_downgraded must be a boolean")
         if f.get("eval_downgraded") is True and not present(f.get("eval_reason")):
             invalid.append(f"{fid}: eval_downgraded needs eval_reason")
-        if excluded(f):
+        if excluded(f, level=level):
             continue
         if sev_of(f) in ("CRITICAL", "HIGH"):
             if not has_trigger(f):
@@ -203,10 +214,10 @@ def validate(findings, ac_rows, lanes, effort, invalid):
             invalid.append(f"{ln['lane']}: high_risk must be a string")
 
 
-def check_ac_named(findings, ac_rows, invalid):
+def check_ac_named(findings, ac_rows, invalid, level="PR"):
     named = set()
     for f in findings:
-        if isinstance(f, dict) and not excluded(f):
+        if isinstance(f, dict) and not excluded(f, level=level):
             named |= tokens(f.get("ac_ref"))
     for r in ac_rows:
         if isinstance(r, dict) and r.get("status") in ("Missing", "Contradicted"):
@@ -277,7 +288,7 @@ def check_floor(pre_findings, findings, invalid):
                 invalid.append(f"safety floor: verified {sev_of(pf)} {label} was lowered in the merged set")
 
 
-def check_previous(prev_findings, findings, lanes, invalid, notes):
+def check_previous(prev_findings, findings, lanes, invalid, notes, level="PR"):
     cleared = {}
     for ln in lanes:
         if isinstance(ln, dict):
@@ -293,7 +304,7 @@ def check_previous(prev_findings, findings, lanes, invalid, notes):
             legacy += 1
             continue
         if sev_of(pf) not in ("CRITICAL", "HIGH") or status_of(pf) != "todo" \
-                or origin_of(pf) != "new" or excluded(pf):
+                or origin_of(pf) != "new" or excluded(pf, level=level):
             continue
         cur = by_id.get(pf.get("id"))
         if cur is None:
@@ -312,11 +323,15 @@ def compute(data, opts, pre=None, previous=None):
         data = {"findings": data}
     if not isinstance(data, dict):
         return {"valid": False, "invalid": ["input is not a JSON object or array"]}
+    level = str(opts.get("level") or data.get("level") or "PR").upper()
     effort = opts.get("effort") or data.get("effort") or "high"
     hold = opts.get("hold_event") or data.get("hold_event") or "REQUEST_CHANGES"
     me = bool(opts.get("author_is_me") or data.get("author_is_me"))
     in_profile = bool(opts.get("in_profile") or data.get("in_profile"))
     ci = opts.get("ci") if opts.get("ci") is not None else data.get("ci")
+    if level not in REVIEW_LEVELS:
+        invalid.append(f"level is not one of {', '.join(REVIEW_LEVELS)}")
+        level = "PR"
     if effort not in LEVELS:
         invalid.append(f"effort is not one of {', '.join(LEVELS)}")
         effort = "high"
@@ -336,14 +351,14 @@ def compute(data, opts, pre=None, previous=None):
         notes.append("skim has no AC matrix; the ac_matrix rows were ignored")
         ac_rows = []
 
-    validate(findings, ac_rows, lanes, effort, invalid)
-    check_ac_named(findings, ac_rows, invalid)
+    validate(findings, ac_rows, lanes, effort, invalid, level=level)
+    check_ac_named(findings, ac_rows, invalid, level=level)
     if pre is not None:
         check_floor(findings_of(pre), findings, invalid)
     if previous is not None:
-        check_previous(findings_of(previous), findings, lanes, invalid, notes)
+        check_previous(findings_of(previous), findings, lanes, invalid, notes, level=level)
 
-    live = [f for f in findings if isinstance(f, dict) and f.get("severity") in SEVS and not excluded(f)]
+    live = [f for f in findings if isinstance(f, dict) and f.get("severity") in SEVS and not excluded(f, level=level)]
     open_set = [f for f in live if origin_of(f) == "new" and status_of(f) == "todo"]
     declined = [f for f in live if origin_of(f) == "new" and status_of(f) == "declined"
                 and sev_of(f) in ("CRITICAL", "HIGH")]
@@ -414,31 +429,37 @@ def compute(data, opts, pre=None, previous=None):
                         if isinstance(ln, dict) and lane_state(ln) == "NOT ASSESSED")
         reasons.append("incomplete: NOT ASSESSED lane(s) " + ", ".join(failed) + " block APPROVE")
 
-    emoji, phrase, me_phrase = PHRASE[verdict]
-    if effort == "low" and not me:
-        if verdict == "REQUEST CHANGES" and why == "other HIGH":
-            phrase = LOW_HIGH_PHRASE
-        elif verdict == "APPROVE":
-            emoji, phrase = "🟢", LOW_NONE_PHRASE
-    if me:
-        phrase = me_phrase
-
-    if me or effort == "low":
-        event = "COMMENT"
-    elif verdict == "REQUEST CHANGES":
-        if effort == "skim":
-            event = hold if n["CRITICAL"] else "COMMENT"
-        else:
-            event = hold
-    elif verdict == "APPROVE WITH COMMENTS":
-        event = "COMMENT"
-    elif effort == "skim":
-        event = "APPROVE" if (in_profile and ci == "passing") else "COMMENT"
+    if level == "CODEBASE":
+        verdict = CODEBASE_VERDICT_MAP[verdict]
+        emoji, phrase = CODEBASE_PHRASE[verdict]
+        event = "NONE"
     else:
-        event = "APPROVE"
+        emoji, phrase, me_phrase = PHRASE[verdict]
+        if effort == "low" and not me:
+            if verdict == "REQUEST CHANGES" and why == "other HIGH":
+                phrase = LOW_HIGH_PHRASE
+            elif verdict == "APPROVE":
+                emoji, phrase = "🟢", LOW_NONE_PHRASE
+        if me:
+            phrase = me_phrase
+
+        if me or effort == "low":
+            event = "COMMENT"
+        elif verdict == "REQUEST CHANGES":
+            if effort == "skim":
+                event = hold if n["CRITICAL"] else "COMMENT"
+            else:
+                event = hold
+        elif verdict == "APPROVE WITH COMMENTS":
+            event = "COMMENT"
+        elif effort == "skim":
+            event = "APPROVE" if (in_profile and ci == "passing") else "COMMENT"
+        else:
+            event = "APPROVE"
 
     return {
         "valid": not invalid,
+        "level": level,
         "effort": effort,
         "open": open_counts,
         "unsatisfied": unsat,
@@ -474,6 +495,7 @@ def main(argv=None):
     ap.add_argument("--pre")
     ap.add_argument("--previous")
     ap.add_argument("--effort", choices=LEVELS)
+    ap.add_argument("--level", type=str.upper, choices=REVIEW_LEVELS)
     ap.add_argument("--hold-event", dest="hold_event", choices=HOLD_EVENTS)
     ap.add_argument("--author-is-me", dest="author_is_me", action="store_true")
     ap.add_argument("--in-profile", dest="in_profile", action="store_true")

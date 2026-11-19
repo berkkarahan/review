@@ -67,6 +67,19 @@ def run_tests():
         and {rule for _, rule, _ in r_multi} == {"question-missing-refresher", "bare-id-question"},
         r_multi)
 
+    cb_good_q = (
+        "### Open questions\n"
+        "1. **Q1** (`app/worker.py:88`) — Retry jobs lack a dead-letter queue. "
+        "Should failed jobs move to a dead-letter topic after three attempts?\n"
+    )
+    chk("CODEBASE Open questions with 1-sentence refresher passes", not ste_lint.lint(cb_good_q), ste_lint.lint(cb_good_q))
+
+    cb_bad_q = (
+        "### Open questions\n"
+        "1. **Q1** (`app/worker.py:88`) — Should failed jobs move to a dead-letter topic?\n"
+    )
+    chk("CODEBASE Open questions without refresher flagged", "question-missing-refresher" in rules_of(cb_bad_q), rules_of(cb_bad_q))
+
     fails = 0
     for name, ok, detail in checks:
         print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"  <- {detail}"))
