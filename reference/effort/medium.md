@@ -31,11 +31,11 @@ EFFORT: medium (Pareto).
 The lead fills in the signal line, because a lane that reads only bundle files may not open `signals.txt`. At `medium`, `ac-matrix.md` holds only the rows that the `adherence` lane returned, plus the count of Met rows.
 
 ### Verification and evaluation
-- At most 2 verifiers, batched by file. Verify only CRITICAL and HIGH findings, and `Missing` or `Contradicted` AC rows.
-- If there are more than 2 batches, merge the smallest batches until 2 remain.
-- After verification (Phase 2.3a, Gate G10), launch 1 `evaluation` subagent (`lanes/evaluation.md`) on the surviving candidates before Carry, `breaker.py`, and the Pareto cut.
+- At most 2 blind verifiers (`standard` tier), batched by file via `scripts/merge_findings.py merge`. Verify only CRITICAL and HIGH findings, and `Missing` or `Contradicted` AC rows.
+- Launch the Phase 2.3a `evaluation` subagent (`lanes/evaluation.md`, `standard` tier) **in parallel in the same message** as the blind verifiers on `nonblocking-candidates.json`.
+- Run `scripts/merge_findings.py finalize <bundle_dir> --effort medium` to enforce the safety floor, run Carry G9 (if enabled), invoke `breaker.py`, and compute the deterministic Pareto cut (`<bundle_dir>/pareto.json`).
 
-### Pareto cut (Phase 2, after dedupe and verification, after the verdict)
+### Pareto cut (computed deterministically by `scripts/merge_findings.py finalize --effort medium`)
 1. Score each merged finding: `score = severity weight × confidence weight × reach`.
    - Severity weight: CRITICAL 8, HIGH 5, MEDIUM 3, QUESTION 2, LOW 1.
    - Confidence weight: HIGH 1.0, MEDIUM 0.7, LOW 0.4.

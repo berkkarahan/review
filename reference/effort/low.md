@@ -24,7 +24,7 @@ The goal is a fast review that finds only CRITICAL and HIGH issues, with as litt
 
 ### Lane selection
 - If `diff.core.patch` has fewer than 400 changed lines, the lead runs the review inline and launches no subagents.
-- Otherwise, launch exactly one `critical-risk` lane (custom method, `lanes/critical-risk.md`). Do not launch any other lane.
+- Otherwise, launch exactly one `critical-risk` lane (custom method, `lanes/critical-risk.md`) on **`fast`** model tier (unless `--no-tier` is set; fall back to `inherit` if unsupported). Do not launch any other lane.
 - Use the `lanes/prompt.md` lane prompt template, but in BUNDLE list only `pr.json`, `files.txt`, `signals.txt`, `diff.core.patch` and `intent.md`. Include the wider code search block, because the lane reads file ranges on demand.
 
 ### Verification and evaluation

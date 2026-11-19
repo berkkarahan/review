@@ -18,11 +18,11 @@ Five rules hold at every level, `skim` included:
 | Bundle | full (`bundle.md` §2) | full, but context files capped at 10 files / 1.5k LOC | reduced diff only, no `head/` copy, no context files (`effort/low.md` §Low context reduction) | `diff.skim.patch` and `lock.patch`, no `head/` copy, no context files, no `signals.txt` (`effort/skim.md` §Skim context) |
 | Intent pack | full | full | compact: ACs/promises, must-not-change statements, PR claims, conflicts | PR title, description and commit headlines only. No spec, no ticket (`effort/skim.md` §Skim context) |
 | Inherited best practices | `lanes/checklist-<lane>.md`, repo rule files and convention docs, persona §8 & §9 | same, fewer lanes | the focus list inside the `critical-risk` method | none (`effort/skim-agent.md` §Skim agent) |
-| Phase 1 lanes | cap 6 (`lanes/selection.md` §Selection) | cap 3 | lead inline if the reduced diff is < 400 changed lines, else 1 `critical-risk` lane | exactly 1 `skim` subagent |
+| Phase 1 lanes | cap 6 (`lanes/selection.md` §Selection; micro-lane auto-fold ≤40 lines / ≤2 files; `standard` tier) | cap 3 (`standard` tier) | lead inline if reduced diff < 400 lines, else 1 `critical-risk` lane (`fast` tier unless `--no-tier`) | exactly 1 `skim` subagent (`fast` tier unless `--no-tier`) |
 | What lanes look for | all severities | all severities, Pareto order, at most 5 non-blocking findings per lane | CRITICAL and HIGH only | CRITICAL and HIGH, plus at most 3 QUESTION findings |
 | AC matrix | all rows | all rows evaluated, only non-`Met` rows returned | only `Missing` and `Contradicted` rows, no test column | none |
-| Verification | ≤ 6 verifiers | ≤ 2 verifiers, CRITICAL and HIGH only | lead verifies inline, no verifier subagents | lead verifies inline, no verifier subagents |
-| Evaluation (Phase 2.3a, G10) | 1 `evaluation` subagent (when candidates survive 2.3) | 1 `evaluation` subagent (when candidates survive 2.3) | lead evaluates inline (`lanes/evaluation.md` rubric) | lead evaluates inline (`lanes/evaluation.md` rubric) |
+| Verification | ≤ 6 verifiers (`standard` tier, overlapped with Evaluation) | ≤ 2 verifiers (`standard` tier, overlapped with Evaluation) | lead verifies inline, no verifier subagents | lead verifies inline, no verifier subagents |
+| Evaluation (Phase 2.3a, G10) | 1 `evaluation` subagent (`standard` tier, parallel with verifiers on non-blocking + inline follow-up) | 1 `evaluation` subagent (`standard` tier, parallel with verifiers) | lead evaluates inline (`lanes/evaluation.md` rubric) | lead evaluates inline (`lanes/evaluation.md` rubric) |
 | Quality gate | full | computed on the lanes that ran, marked `partial` when a lane was folded | `n/a` | `n/a` |
 | Persona pass | full | full on the Pareto set | STE rewrite only, no re-rank or fold (there is nothing below HIGH) | STE rewrite only, no re-rank or fold |
 | Gates (`gates.md`) | G0–G8, G10 | G0–G8, G10 | G0, G1–G4 by script, G5 if < 30 comments, G7 n/a, G8, G10 inline | G0, G1–G4 by script, G8, G10 inline |
@@ -38,7 +38,8 @@ Apply options in this order (whether passed as flags or picked up from the user'
 3. `--no-inherit` runs `adherence` and `conventions` only. At `medium` this is 2 lanes. At `low` it removes the security and performance items from the `critical-risk` focus list. At `skim`, ignore it, because `skim` already inherits nothing. Add this line to the plan: "`--no-inherit` has no effect at skim."
 4. `--inline` and small-PR mode apply at `high` and `medium` as described in `lanes/selection.md` §Selection, inside the effort lane cap. At `low` the size threshold below replaces them. At `skim`, ignore `--inline`, because `skim` always uses one subagent. Add this line to the plan: "`--inline` has no effect at skim."
 5. `--spec` applies at `high`, `medium` and `low`. At `skim`, ignore it, because `skim` reads no spec. Add this line to the plan: "`--spec` has no effect at skim."
-6. `--post` works at every level. At `low` the event is always `COMMENT`, and `REQUEST_CHANGES` is offered only as an explicit option at posting time. At `skim` the event follows `effort/skim.md` §Skim verdict.
+6. `--no-tier` disables `fast` model tiering on `low` and `skim` subagents, forcing `standard` (`inherit`). It has no effect at `high` and `medium`, which already run all subagents on `standard` (`inherit`).
+7. `--post` works at every level. At `low` the event is always `COMMENT`, and `REQUEST_CHANGES` is offered only as an explicit option at posting time. At `skim` the event follows `effort/skim.md` §Skim verdict.
 
 ## `--effort=auto`
 

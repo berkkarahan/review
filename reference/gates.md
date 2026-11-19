@@ -2,17 +2,17 @@
 
 A gate is a check with a pass condition and a fixed action on failure. Gates keep noise out of the report. Run them in the phase shown. Where a script is named, run the script. Do not judge by eye what a script can decide.
 
-All scripts are in `scripts/` and use the Python standard library only. They read JSON. The lead converts each lane's YAML block to JSON, in one `findings.json` for all lanes, before Gate G1.
+All scripts are in `scripts/` and use the Python standard library only. They read JSON. Phase 1 lanes return compact JSON blocks directly; `scripts/merge_findings.py merge` automates Gates G1–G5, pruning, dedupe, and verify/eval partitioning in one command, and `scripts/merge_findings.py finalize` automates safety-floor enforcement, Gate G9 Carry, Breaker, and `medium` Pareto cuts.
 
 | Gate | Phase | Pass condition | On fail | How |
 |---|---|---|---|---|
-| G0 PR state | 0.3 | `state` is `OPEN` (when reviewing a GitHub PR). | Stop. Say "PR is closed or merged." | `pr.json` |
-| G0b Draft, bot, size | 0.3 | None of: draft, bot author, lockfile-only. | Draft: note it in Context. Bot or lockfile-only: use `skim` unless the user set `--effort`. | `pr.json`, `files.txt` |
-| G1 Schema | 2.1 | Required fields exist and enums are valid. | Retry the lane once. Then `NOT ASSESSED`. | `scripts/schema_lint.py` |
-| G2 In diff | 2.2 | `location` sits on an added line of `diff.patch` (intent-only locations allowed for intent lanes only; out-of-diff sites in `locations` are pruned). | `drop`: discard the finding and count it under `out-of-diff`. Never report or post pre-existing code defects. | `scripts/diff_map.py`, then `scripts/schema_lint.py` |
-| G3 Trigger | 2.2 | CRITICAL and HIGH have a concrete `trigger`. | Cap the severity at MEDIUM. Use QUESTION if the cause is unknown. | `scripts/schema_lint.py` |
-| G4 Confidence | 2.2 | No MEDIUM or LOW finding has LOW confidence. | Drop it and count it in "dropped". | `scripts/schema_lint.py` |
-| G5 Already raised | 2.2 | No existing review comment, review body or bot comment covers the same file, within 5 lines, and the same flaw. | Drop it. Add one line to Context: "Already raised: <n>". | `existing-comments.json` (see below) |
+| G0 PR state | 0.3 | `state` is `OPEN` (when reviewing a GitHub PR). | Stop. Say "PR is closed or merged." | `scripts/build_bundle.py` / `pr.json` |
+| G0b Draft, bot, size | 0.3 | None of: draft, bot author, lockfile-only. | Draft: note it in Context. Bot or lockfile-only: use `skim` unless the user set `--effort`. | `scripts/build_bundle.py` |
+| G1 Schema | 2.1 | Required fields exist and enums are valid. | Retry the lane once. Then `NOT ASSESSED`. | `scripts/merge_findings.py merge` (`schema_lint.py`) |
+| G2 In diff | 2.2 | `location` sits on an added line of `diff.patch` (intent-only locations allowed for intent lanes only; out-of-diff sites in `locations` are pruned). | `drop`: discard the finding and count it under `out-of-diff`. Never report or post pre-existing code defects. | `scripts/build_bundle.py` (`diff_map.py`) + `scripts/merge_findings.py merge` |
+| G3 Trigger | 2.2 | CRITICAL and HIGH have a concrete `trigger`. | Cap the severity at MEDIUM. Use QUESTION if the cause is unknown. | `scripts/merge_findings.py merge` (`schema_lint.py`) |
+| G4 Confidence | 2.2 | No MEDIUM or LOW finding has LOW confidence. | Drop it and count it in "dropped". | `scripts/merge_findings.py merge` (`schema_lint.py`) |
+| G5 Already raised | 2.2 | No existing review comment, review body or bot comment covers the same file, within 5 lines, and the same flaw. | Drop it. Add one line to Context: "Already raised: <n>". | `scripts/merge_findings.py merge` (`existing-comments.json`) |
 | G6 Linter covers it | 2.2 | The finding is not a style, format or import-order point, and not a rule that the repo's lint or type CI job enforces. | Drop it. | `statusCheckRollup` in `pr.json`, and the repo's lint config |
 | G7 Budget | 3 | At most `voice.max_inline` posted comments, at most 8 MEDIUM, LOW folded, at most 3 house-rule LOW. | Move excess non-blocking items to chat-only (`Not posted (chat only):`). Never dump excess items into the posted PR body. CRITICAL and HIGH are never cut. | Persona pass step 9 |
 | G8 STE & refreshers | 3, 4 and Posting 4 | `ste_lint.py` exits 0 on the report, on the review body and on each inline comment, with `--findings` set to the reported findings, and every question includes a ≤1-sentence refresher. | Rewrite the failing sentences or add the missing refresher. Run again. Two failures: show the remaining lines to the user. | `scripts/ste_lint.py` |

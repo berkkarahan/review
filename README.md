@@ -38,7 +38,8 @@ A **framework-agnostic, codebase-aware, multi-lane code review skill** for AI co
 - **Conditional Parallel Candidate Lanes with Zero Overlap:** Selects up to 6 concurrent specialist candidate lanes (`adherence`, `code-quality`, `security`, `performance`, `compatibility`, `robustness`, `conventions`) based on diff-shape and changed-file signals (`code-quality` and `conventions` run conditionally rather than blindly on docs/lockfile-only diffs) with strict concern ownership so lanes never duplicate work.
 - **Blind Independent Verification + Evaluation Lane (`G10`):** Every `CRITICAL` and `HIGH` finding—plus every `Missing` or `Contradicted` acceptance criterion—is re-checked at `head_sha` by an independent verifier subagent that receives only the claim, location, and trigger (never the lane's reasoning). Surviving candidates are never taken for granted: the Phase 2.3a **`evaluation` lane** (`reference/lanes/evaluation.md`) classifies each candidate as `post`, `chat-only`, or `drop` and recalibrates inflated severities while preserving the safety floor.
 - **Mandatory ≤1-Sentence Question Refreshers:** Both author-facing questions (`Questions for the author`) and interactive human-in-the-loop prompts (`AskUserQuestion` options, per-finding selection, decline confirmations, memory prompts) must pair every referenced ID (`C1`, `H2`, `Q1`, `B1`, `AC3`, etc.) with at most one concise STE refresher sentence explaining what that item is—never bare IDs alone.
-- **Deterministic Python Quality Gates (Stdlib-Only):** Uses zero-dependency Python scripts in [`scripts/`](./scripts) to map diff lines (`diff_map.py`), enforce schema/diff/trigger/confidence gates (`schema_lint.py`), reconcile carried findings across commits (`carry_findings.py`), compute mechanical verdicts (`breaker.py`), lint Simplified Technical English and question refreshers (`ste_lint.py`), and measure per-lane precision (`precision.py`).
+- **High-Throughput Orchestration & Token Optimization:** Automates Phase 0 bundling, parallel-threaded `gh`/`git` fetches, `diff-map.json`, signals, carry prep, and **per-lane diff slicing** (`lanes/<lane>.patch`) via [`scripts/build_bundle.py`](./scripts/build_bundle.py); cuts Phase 1 cold-start tokens by ~75% via [`lanes/lane-brief.md`](./reference/lanes/lane-brief.md) and **micro-lane auto-folding** (≤ 40 changed lines across ≤ 2 files); eliminates LLM YAML→JSON re-typing via [`scripts/merge_findings.py`](./scripts/merge_findings.py); overlaps Phase 2.3 Blind Verification with Non-Blocking Evaluation in one parallel wave; applies `fast` model tiering on `skim` and `low` efforts (`--no-tier` to override); and short-circuits Phase 3 on clean `APPROVE` reviews.
+- **Deterministic Python Quality Gates (Stdlib-Only):** Uses zero-dependency Python scripts in [`scripts/`](./scripts) to build parallel bundles and per-lane diff slices (`build_bundle.py`), map diff lines (`diff_map.py`), run Gates `G1`–`G5`, dedupe, safety-floor enforcement, Carry `G9`, Breaker, and `medium` Pareto cuts (`merge_findings.py`), enforce schema/diff/trigger/confidence gates (`schema_lint.py`), reconcile carried findings (`carry_findings.py`), compute mechanical verdicts (`breaker.py`), lint Simplified Technical English and question refreshers (`ste_lint.py`), and measure per-lane precision (`precision.py`).
 - **Stateful Re-Review & Delta Carry:** Automatically detects prior reviews of the same PR, assigns stable finding IDs (`B1`, `D1`, `S1`, …), reviews only the commit delta (`<last_sha>..<head_sha>`) when history is linear, preserves user declines, and requires code evidence at `head_sha` to close open `CRITICAL`/`HIGH` findings or challenge prior declines.
 - **Configurable Persona & Memory Acquisition:** Adapts emphasis, comment structure, inline budgets, tone (`direct`, `constructive`, `mentor`, `strict`, `concise`), objective house rules (§8), and learned preferences (§9) via [`reference/persona.md`](./reference/persona.md) without ever compromising the safety floor or STE grammar.
 
@@ -52,33 +53,27 @@ flowchart TD
     ModeSwitch -->|"Persona / Preference Setup"| ConfigMode["Interactive Persona Configuration<br/>(reference/output/persona-pass.md)<br/>Updates reference/persona.md"]
     ModeSwitch -->|"Code Review"| P0["Phase 0: Plan (Inline)"]
 
-    subgraph Phase0 ["Phase 0: Plan (Inline, Built Once)"]
-        P0 --> P01["0.1 Resolve Target & Effort<br/>(GitHub PR | Current Branch PR | Local Branch Diff)"]
-        P01 --> P02["0.2 Check Persona & Memory<br/>(reference/persona.md frontmatter)"]
-        P02 --> P03["0.3 Build Bundle & Run G0 / G0b<br/>(pr.json, diff.patch, head/, base/, diff-map.json,<br/>existing-comments.json, signals.txt, rules-changed.txt)"]
-        P03 --> P03Carry["0.3b Carry & Delta Check<br/>(scripts/carry_findings.py prepare)"]
-        P03Carry --> P04["0.4 Build PR-Scoped Intent Chain<br/>(Specs, Plans, Tickets, PR Claims -> intent.md)"]
-        P04 --> P05["0.5 Conditional Lane Selection & Ownership<br/>(reference/lanes/selection.md)"]
-        P05 --> P06["0.6 Print Review Plan in STE"]
+    subgraph Phase0 ["Phase 0: Plan (1 Parallel-Threaded Script Call + Optional External Fetch)"]
+        P0 --> P01["0.1 scripts/build_bundle.py<br/>(Parallel git/gh threads -> pr.json, diff-map, signals,<br/>sliced lanes/*.patch, G0/G0b, carry prep, micro-lane auto-fold)"]
+        P01 --> P04["0.2 Build PR-Scoped Intent Chain<br/>(Parallel external ticket/URL fetch -> intent.md)"]
+        P04 --> P06["0.3 Print Review Plan in STE"]
     end
 
-    subgraph Phase1 ["Phase 1: Fan Out (Concurrent Candidate Lanes)"]
-        P06 --> Lanes["Launch Selected Candidate Lanes in One Message<br/>(adherence | code-quality | security | performance |<br/>compatibility | robustness | conventions | critical-risk | skim)"]
+    subgraph Phase1 ["Phase 1: Fan Out (Concurrent Candidate Lanes on Sliced Diffs)"]
+        P06 --> Lanes["Launch Selected Candidate Lanes in One Message<br/>(lane-brief.md + lanes/&lt;lane&gt;.patch + compact JSON output;<br/>fast tier at skim/low only, standard tier at high/medium)"]
     end
 
-    subgraph Phase2 ["Phase 2: Merge, Gate, Verify, Evaluate & Breaker"]
-        Lanes --> G1["2.1 Gate G1: Schema Validation<br/>(scripts/schema_lint.py)"]
-        G1 --> G26["2.2 Gates G2-G6, Calibration & Dedupe<br/>(Strict G2 Diff Drop, Trigger, Confidence, Already Raised, Linter)"]
-        G26 --> Verify["2.3 Blind Verification<br/>(lanes/verifier.md on CRITICAL/HIGH & Missing/Contradicted ACs)"]
-        Verify --> Eval["2.3a Evaluation Lane (Gate G10)<br/>(lanes/evaluation.md -> post | chat-only | drop + Severity Calibration)"]
-        Eval --> G9["2.3b Gate G9: Reconcile Carry State<br/>(scripts/carry_findings.py reconcile on post findings)"]
-        G9 --> Breaker["2.4-2.5 Deterministic Breaker & Verdict<br/>(scripts/breaker.py -> verdict, phrase, event, band)"]
-        Breaker --> Pareto["2.6 Pareto Cut (medium effort only)"]
+    subgraph Phase2 ["Phase 2: Deterministic Merge, Overlapped Verify/Eval Wave & Finalize"]
+        Lanes --> Merge["2.1 scripts/merge_findings.py merge<br/>(Zero-token G1-G5, pruning, dedupe, split verify-batches &amp; nonblocking)"]
+        Merge --> Verify["2.2a Blind Verifiers (Parallel)<br/>(CRITICAL/HIGH &amp; Missing/Contradicted ACs)"]
+        Merge --> Eval["2.2b Evaluation Lane - Gate G10 (Parallel)<br/>(MEDIUM/LOW/QUESTION + MEDIUM evidence check -> post|chat-only|drop)"]
+        Verify --> Finalize["2.3 scripts/merge_findings.py finalize<br/>(Safety Floor + Carry G9 + Breaker Verdict + Medium Pareto Cut)"]
+        Eval --> Finalize
     end
 
-    subgraph Phase3 ["Phase 3: Persona Pass & STE"]
-        Pareto --> PersonaPass["Re-rank by Emphasis, Fold Minor/Suppressed,<br/>Apply Tone, Gate G7 (Chat-Only Excess Budget)"]
-        PersonaPass --> G8["Gate G8: STE & Question Refresher Lint<br/>(scripts/ste_lint.py)"]
+    subgraph Phase3 ["Phase 3: Persona Pass (Zero-Finding Fast Path) & STE"]
+        Finalize --> PersonaPass["Skip Persona Pass on Zero-Finding APPROVE;<br/>Else Re-rank, Fold, Apply Tone, Gate G7 (Chat-Only Excess)"]
+        PersonaPass --> G8["Gate G8: STE &amp; Question Refresher Lint<br/>(scripts/ste_lint.py)"]
     end
 
     subgraph Phase4 ["Phase 4: Deliver, Post & Learn"]
@@ -180,9 +175,10 @@ All options can be passed as explicit flags or stated in natural language:
 | `--lanes` | `lane1,lane2,...` | signal-driven | Runs the exact comma-separated lane list at `high` and `medium` (warns if `adherence` is omitted). Narrows the `critical-risk` focus list at `low`. Ignored at `skim`. |
 | `--no-inherit` | flag | `false` | Runs only `adherence` and `conventions` (skips checklist-based lanes). At `low`, removes security/performance items from `critical-risk`. Ignored at `skim`. |
 | `--inline` | flag | auto (`small_pr`) | Forces small-PR mode at `high`/`medium` (lead runs `adherence` inline while at most 2 other lanes run in parallel). Ignored at `skim`. |
+| `--no-tier` | flag | `false` | Disables `fast` model tiering on `low` and `skim` subagents, forcing `standard` (`inherit`). (`high` and `medium` always use `standard`/`inherit`.) |
 | `--post` | flag | interactive prompt | Proceeds directly to the Phase 4.3 GitHub review payload builder and confirmation flow after generating the report. |
 
-**Option Precedence:** `--effort` → `--lanes` → `--no-inherit` → `--inline` / small-PR mode → `--spec` → `--post`.
+**Option Precedence:** `--effort` → `--lanes` → `--no-inherit` → `--inline` / small-PR mode → `--spec` → `--no-tier` → `--post`.
 
 ---
 
@@ -305,10 +301,17 @@ Gates keep false positives, low-signal noise, and out-of-diff findings out of th
 All scripts are standalone Python 3 modules using only the standard library:
 
 ```bash
+# 0. Build bundle, diff-map, signals, per-lane diff slices, carry prep & effort resolution in parallel threads
+python3 scripts/build_bundle.py [pr-url-or-number] [--effort auto|high|medium|low|skim] [--local-only]
+
 # 1. Build a map of added and context right-side line numbers per file from a unified diff
 python3 scripts/diff_map.py <bundle_dir>/diff.patch > <bundle_dir>/diff-map.json
 
-# 2. Run deterministic Gates G1 (schema), G2 (in-diff), G3 (trigger), and G4 (confidence)
+# 2. Merge lane JSON outputs, run Gates G1-G5, prune locations, dedupe & split verify/eval queues
+python3 scripts/merge_findings.py merge <bundle_dir>
+python3 scripts/merge_findings.py finalize <bundle_dir> [--carry]
+
+# 3. Run deterministic Gates G1 (schema), G2 (in-diff), G3 (trigger), and G4 (confidence) standalone
 python3 scripts/schema_lint.py <bundle_dir>/findings.json <bundle_dir>/diff-map.json
 
 # 3. Prepare, reconcile, and mark stateful findings across re-reviews (Gate G9)
@@ -439,14 +442,15 @@ review/
 │   │   ├── skim.md                           # Skim profile limits, context, verdict table, & short report
 │   │   └── skim-agent.md                     # Single subagent prompt for skim reviews
 │   ├── lanes/
-│   │   ├── selection.md                      # Phase 0.5: Signal-to-lane mapping, caps, folding, & lane ownership
-│   │   ├── prompt.md                         # Phase 1: Concurrent subagent prompt template
-│   │   ├── lane-rules.md                     # Universal rules and prompt-injection safety for all lanes
+│   │   ├── selection.md                      # Phase 0.5: Signal-to-lane mapping, micro-lane auto-fold, tiering, & ownership
+│   │   ├── prompt.md                         # Phase 1: Concurrent subagent prompt template (sliced diff + JSON output)
+│   │   ├── lane-brief.md                     # Compact (~650-tok) Phase 1 lane rules & JSON schema contract
+│   │   ├── lane-rules.md                     # Full reference lane rules and prompt-injection safety
 │   │   ├── adherence.md                      # Custom method: verifies PR-scoped code & tests against intent.md
 │   │   ├── conventions.md                    # Custom method: repo rule files, codebase idioms, persona §8 & §9
 │   │   ├── critical-risk.md                  # Low-effort method: CRITICAL/HIGH correctness, security, and data safety
 │   │   ├── evaluation.md                     # Phase 2.3a (Gate G10): evaluates candidate findings (post | chat-only | drop)
-│   │   ├── verifier.md                       # Phase 2.3: Blind verification subagent prompt
+│   │   ├── verifier.md                       # Phase 2.3: Blind verification subagent prompt (parallel with evaluation)
 │   │   ├── checklist-code-quality.md         # Checklist for code-quality lane
 │   │   ├── checklist-security.md             # Checklist for security lane
 │   │   ├── checklist-performance.md          # Checklist for performance lane
@@ -454,15 +458,17 @@ review/
 │   │   └── checklist-robustness.md           # Checklist for robustness lane
 │   ├── output/
 │   │   ├── verdict.md                        # Phase 2.4-2.5: Breaker invocation and verdict counting rules
-│   │   ├── persona-pass.md                   # Phase 3: Re-ranking, folding, tone shaping, Gate G7, & interactive setup
+│   │   ├── persona-pass.md                   # Phase 3: Re-ranking, folding, tone shaping, Gate G7, & zero-finding fast path
 │   │   ├── ste.md                            # ASD-STE100 grammar rules, fixed headings, question refreshers, & self-check
 │   │   ├── ste-examples.md                   # Paraphrased reviewer patterns mapped to compliant STE sentences
 │   │   ├── report.md                         # Phase 4.1: Chat report template, AC matrix rules, & durable archiving
 │   │   └── posting.md                        # Phase 4.3: Head SHA verification, diff-line mapping, & GitHub API posting
 │   └── schema/
-│       ├── finding.md                        # Finding & ACRow schemas, severity calibration, and lane YAML output block
+│       ├── finding.md                        # Finding & ACRow schemas, severity calibration, and lane output schema
 │       └── carry.md                          # Stable ID prefixes, carried status lifecycle, and lane carry contracts
 └── scripts/                                  # Deterministic Python 3 scripts (standard library only)
+    ├── build_bundle.py                       # Parallel-threaded Phase 0 bundle builder, diff slicer, signals & carry prep
+    ├── merge_findings.py                     # Deterministic Phase 2 merge (G1-G5, dedupe) & finalize (floor, G9, breaker, Pareto)
     ├── breaker.py                            # Computes open counts, completeness, quality-gate band, verdict, and event
     ├── carry_findings.py                     # Prepares, reconciles, and marks carried findings across review rounds
     ├── diff_map.py                           # Parses unified diffs into right-side added/context line maps
@@ -476,11 +482,15 @@ review/
         │   ├── diff-map.json                 # Test fixture diff map
         │   ├── legacy-findings.json          # Pre-carry findings fixture
         │   └── new-fields-findings.json      # Carry-enabled findings fixture
+        ├── bundle/
+        │   └── test_build_bundle.py          # Offline git repo regression suite for build_bundle.py, slicing & micro-fold
         ├── carry/
         │   ├── run_tests.py                  # Subprocess CLI test suite for carry_findings.py
         │   ├── prev_round1.json              # Round 1 findings fixture
         │   ├── new_round2.json               # Round 2 delta findings fixture
         │   └── prev_legacy.json              # Legacy ID migration fixture
+        ├── merge/
+        │   └── test_merge_findings.py        # Regression suite for merge_findings.py (G1-G5, dedupe, floor, Pareto)
         ├── schema_lint/
         │   └── test_schema_lint.py           # Regression suite for strict G1-G4 gates and kept_locations pruning
         └── ste_lint/
@@ -494,6 +504,12 @@ review/
 All deterministic scripts include self-contained regression tests using only the Python standard library:
 
 ```bash
+# Run the parallel bundle builder, diff slicer, and micro-lane folding test suite
+python3 -I -B scripts/tests/bundle/test_build_bundle.py
+
+# Run the deterministic merge, G1-G5, dedupe, safety-floor, and Pareto test suite
+python3 -I -B scripts/tests/merge/test_merge_findings.py
+
 # Run the table-driven verdict, evaluation safety-floor, and quality-gate breaker test suite
 python3 -I -B scripts/tests/breaker/test_breaker.py
 
@@ -505,9 +521,6 @@ python3 -I -B scripts/tests/schema_lint/test_schema_lint.py
 
 # Run the Gate G8 STE and question-refresher linter test suite
 python3 -I -B scripts/tests/ste_lint/test_ste_lint.py
-
-# Verify schema_lint.py against the carry-enabled test fixture
-python3 -I -B scripts/schema_lint.py scripts/tests/breaker/new-fields-findings.json scripts/tests/breaker/diff-map.json
 ```
 
 ---
