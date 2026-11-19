@@ -20,15 +20,15 @@ The goal is a fast review that finds only CRITICAL and HIGH issues, with as litt
 - **Compact intent pack.** Write `intent.md` with only: Sources, the Acceptance criteria / planned deliverables, the "must not change" statements from the objective boundaries, the PR claims, Conflicts and Gaps. Cite referenced spec items by ID and path, without verbatim excerpts. Run the planned document lookup steps of `intent.md` §3.3, and read only the sections that hold acceptance criteria, tasks and "must not change" statements. Read the PR description and the commit headlines, not each commit.
 - **Quiet tools.** Cap tool output: use `wc -l`, `grep -c`, `head -n`, and `--stat`, and do not print a whole diff into the lead's context.
 
-- **Keep for posting.** Still write `pr.json`, `files.txt`, `signals.txt` and the full `diff.patch` to disk, because Posting step 2 builds its diff-line map from `diff.patch`. Do not read `diff.patch` into context.
+- **Keep for posting and Gate G2.** Still write `pr.json`, `files.txt`, `signals.txt`, the full `diff.patch`, and `diff-map.json` (`scripts/diff_map.py diff.patch > diff-map.json`) to disk, because Gate G2 (`scripts/schema_lint.py`) and Posting step 2 require them. Do not read `diff.patch` into context.
 
 ### Lane selection
 - If `diff.core.patch` has fewer than 400 changed lines, the lead runs the review inline and launches no subagents.
 - Otherwise, launch exactly one `critical-risk` lane (custom method, `lanes/critical-risk.md`). Do not launch any other lane.
 - Use the `lanes/prompt.md` lane prompt template, but in BUNDLE list only `pr.json`, `files.txt`, `signals.txt`, `diff.core.patch` and `intent.md`. Include the wider code search block, because the lane reads file ranges on demand.
 
-### Verification
-The lead verifies each CRITICAL and HIGH finding inline. For each one, re-read the cited line range at `head_sha` and one caller or guard. If the evidence does not hold, drop the finding. If it is not clear, downgrade the finding to a question. Do not launch verifier subagents.
+### Verification and evaluation
+Run `scripts/schema_lint.py` against `diff-map.json` (G1–G4; G2 drops any out-of-diff finding). Then the lead verifies each CRITICAL and HIGH finding inline: re-read the cited line range at `head_sha` and one caller or guard. If the evidence does not hold, drop the finding. If it is not clear, downgrade the finding to a question. Do not launch verifier subagents. Then apply the Phase 2.3a `evaluation` rubric (`lanes/evaluation.md`) inline (routing low-signal observations to `chat-only` or `drop` while keeping all safety-floor findings at `post`) before `breaker.py --effort low`.
 
 ### Low report
 Print this short form instead of `output/report.md` §Report. Write it in STE.
@@ -46,10 +46,10 @@ Print this short form instead of `output/report.md` §Report. Write it in STE.
 <findings, same format as §Report>
 
 ### Questions for the author
-<at most 3>
+1. **Q1** (`path:line`) — <at most 1 STE sentence explaining the item>. <Direct question?>   # at most 3
 
 ---
-Effort: low · Lanes: <inline | critical-risk ✓> · Quality gate: n/a · Findings: <raw> raw → <kept> kept → <dropped> dropped by the lead · Persona: <refresh date>, <approved | unapproved (draft) | neutral (none)> · Language: ASD-STE100, self-check done
+Effort: low · Lanes: <inline | critical-risk ✓> · Quality gate: n/a · Findings: <raw> raw → <kept> kept · Removed: <g2> out-of-diff, <eval> evaluated-out, <dropped> dropped by the lead · Persona: <refresh date>, <approved | unapproved (draft) | neutral (none)> · Language: ASD-STE100, G8 clean
 ```
 Verdict phrases at `low`:
 - Any verified CRITICAL, or a verified `Missing` or `Contradicted` AC: 🔴 "Not ready to merge".

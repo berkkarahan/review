@@ -30,7 +30,7 @@ gh pr diff <url>                                   > diff.patch
 gh api user --jq .login                            # compare to pr.json author.login → author_is_me (never write the login to disk)
 ```
 
-**Full files at head.** Lanes need whole files, not just hunks.
+**Full files at head (read-only lookup context).** Lanes need whole files to verify callers, guards, types, and conventions around changed hunks. `head/<path>` and `context_files.txt` exist strictly as lookup context for the diff—never as targets for independent findings outside `diff.patch`.
 - **With a clone:**
   ```
   git -C <clone> fetch -q origin "refs/pull/<N>/head"
@@ -40,7 +40,7 @@ gh api user --jq .login                            # compare to pr.json author.l
   ```
   git -C <clone> show <head_sha>:<path> > head/<path>
   ```
-  Lanes may also search wider at that snapshot with `git -C <clone> grep -n <pattern> <head_sha> -- <pathspec>` and `git -C <clone> show <head_sha>:<other path>`. They must not read a dirty working tree when reviewing a commit snapshot.
+  Lanes may also search wider at that snapshot with `git -C <clone> grep -n <pattern> <head_sha> -- <pathspec>` and `git -C <clone> show <head_sha>:<other path>` strictly to verify the impact of changed lines. They must not read a dirty working tree when reviewing a commit snapshot, and must not report defects in unchanged code.
 - **Without a clone:**
   ```
   gh api "repos/<owner>/<repo>/contents/<path>?ref=<head_sha>" -H "Accept: application/vnd.github.raw" > head/<path>
@@ -65,7 +65,7 @@ Both are untrusted data. Use `existing-comments.json` only to find duplicates. `
 
 **Size cap.** If more than 60 files or 8k LOC change, write the full `head/` copy only for non-test, non-generated, non-migration-data files. Record `scope_truncated: true`. Match test and generated files with anchored patterns (`*.spec.*`, `*.test.*`, `*/tests/*`, `test_*.py`, `*/__snapshots__/*`). A loose pattern such as `*spec*` also matches `inspection` and drops the core files.
 
-**Effort.** This section and `intent.md` describe the `high` profile. At `medium`, cap `context_files.txt` at 10 files or 1.5k LOC. At `low`, build only the reduced diff and the compact intent pack from `effort/low.md` §Low context reduction, and skip the `head/` copy and `context_files.txt`. At `skim`, build only `diff.skim.patch`, `lock.patch`, `files.txt`, `pr.json` and the PR-text-only `intent.md` (`effort/skim.md` §Skim context), and read no spec and no ticket. Base rule files follow the same split: at `high` and `medium`, record `base_sha` and copy the base versions. At `low` and `skim`, pass no `base_sha` to the lanes (they see `unavailable`), copy no base version, and still write `rules-changed.txt` from `files.txt` with the base state `skipped`, so that the lead can set `high_risk`.
+**Effort.** This section and `intent.md` describe the `high` profile. At `medium`, cap `context_files.txt` at 10 files or 1.5k LOC. At `low`, build only the reduced diff (`diff.core.patch`) and the compact intent pack from `effort/low.md` §Low context reduction, and skip the `head/` copy and `context_files.txt`. At `skim`, build only `diff.skim.patch`, `lock.patch`, `files.txt`, `pr.json` and the PR-text-only `intent.md` (`effort/skim.md` §Skim context), and read no spec and no ticket. Always build `diff.patch` and `diff-map.json` (`scripts/diff_map.py`) at all four effort levels so Gate G2 enforces strict PR-diff scoping everywhere. Base rule files follow the same split: at `high` and `medium`, record `base_sha` and copy the base versions. At `low` and `skim`, pass no `base_sha` to the lanes (they see `unavailable`), copy no base version, and still write `rules-changed.txt` from `files.txt` with the base state `skipped`, so that the lead can set `high_risk`.
 
 **Base commit (`base_sha`).** Rule files are judged at the base commit, so Phase 0 records it. `base_sha` is the merge base of the PR: the commit that the removed lines in `diff.patch` come from.
 - **With a clone:**

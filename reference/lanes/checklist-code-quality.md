@@ -1,6 +1,6 @@
 # Lane checklist: code-quality
 
-Read and apply this checklist to the changed code and the code it reaches. Report only what the diff adds or changes. Map each item to a `dimension` value.
+Read and apply this checklist strictly to the lines added, modified, or removed in `diff.patch` (inspect surrounding files and callers solely as read-only context to verify impact). Report only defects introduced or worsened by this PR. Map each item to a `dimension` value.
 
 **Codebase and framework awareness:** Before raising any finding, inspect the existing codebase, surrounding modules, and any convention files or framework documentation that the codebase points to. Respect the project's established architecture, layering, error-handling idioms, and test conventions. Do not flag patterns that follow the existing codebase's conventions unless they cause a concrete defect.
 

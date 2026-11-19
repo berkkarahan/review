@@ -51,7 +51,7 @@ STE does not apply to lane prompts, verifier prompts, `intent.md` or other inter
 - Do not use chat abbreviations (for example "wdyt", "IMO", "FYI").
 - Do not use hedges ("I think", "Maybe", "How about", "I am not sure but"). The `[SEVERITY / CONFIDENCE]` prefix shows the confidence. If necessary, add one sentence: "This is not verified."
 - Give each finding this shape: the problem (1–2 descriptive sentences), the evidence (`path:line`), the impact (1 sentence), and the fix (1–3 commands). For more than 3 commands, use a vertical list.
-- Give each QUESTION one context sentence and one direct question.
+- **Question & ID Refresher Rule:** Whenever a question is asked to the human-in-the-loop (`AskUserQuestion` prompts, option labels, per-finding post/drop/fix/decline/memory prompts) or to the PR author (`QUESTION` findings / `Questions for the author`), never reference a bare item ID (`C1`, `H2`, `Q1`, `B1`, `S2`, `X1`, `Y2`, `AC3`, `P1`, etc.) alone. Always include **at most 1 short STE sentence** (≤ 25 words) explaining what that item is as a quick refresher before or alongside the question (`**Q1** (\`path:line\`) — <1-sentence max refresher>. <Direct question?>`).
 
 **Fixed headings and phrases** (these replace the persona labels in `output/report.md` §Report):
 
@@ -69,11 +69,12 @@ STE does not apply to lane prompts, verifier prompts, `intent.md` or other inter
 | PR claims | "**PR claims that the evidence does not support:**" |
 | STE acknowledgement (last line of the posted review body, one time only) | "This review uses ASD-STE100 Simplified Technical English (STE): https://www.asd-ste100.org/" |
 
-**STE self-check.** Do this check before you print the report, and again before you write `review-payload.json`. First run Gate G8: `python3 scripts/ste_lint.py <file> --findings <bundle_dir>/findings.json` on the report, on the review body and on each inline comment. Pass the findings that the text reports, not the dropped or pre-existing ones. Fix every line that the script prints. The script finds length, "-ing", semicolon, hedge and lost-evidence problems. It cannot judge the rest, so then do the checklist below by hand. No tool replaces the standard (STE website FAQ). For each sentence, ignore the verbatim items, then confirm these points:
+**STE self-check.** Do this check before you print the report, and again before you write `review-payload.json`. First run Gate G8: `python3 scripts/ste_lint.py <file> --findings <bundle_dir>/findings.json` on the report, on the review body and on each inline comment. Pass the `post` findings that the text reports, not the dropped, `chat-only`, or out-of-diff ones. Fix every line that the script prints. The script finds length, "-ing", semicolon, hedge, missing question-refresher, and lost-evidence problems. It cannot judge the rest, so then do the checklist below by hand. No tool replaces the standard (STE website FAQ). For each sentence, ignore the verbatim items, then confirm these points:
 - [ ] Each instruction is a command, with a maximum of 20 words.
 - [ ] Each descriptive sentence is in the active voice, with a maximum of 25 words.
 - [ ] Each sentence has one topic. No paragraph has more than 6 sentences.
 - [ ] There are no "-ing" verb forms, and no noun cluster has more than 3 words.
 - [ ] No article is omitted. There are no semicolons and no chat abbreviations.
 - [ ] Each condition comes before its result.
+- [ ] Every author question and every human-in-the-loop prompt that cites an item ID includes at most 1 short STE sentence explaining that item.
 - [ ] Each `path:line`, identifier, number and fix action from the verified finding is still in the text. STE changes the words, not the evidence.

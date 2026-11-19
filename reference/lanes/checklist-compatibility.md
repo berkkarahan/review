@@ -1,6 +1,6 @@
 # Lane checklist: compatibility
 
-Read and apply this checklist to the changed code and the code it reaches. Report only what the diff adds or changes. Map each item to a `dimension` value.
+Read and apply this checklist strictly to the lines added, modified, or removed in `diff.patch` (inspect consumers, contracts, and migrations solely as read-only context to verify impact). Report only compatibility risks introduced or worsened by this PR. Map each item to a `dimension` value.
 
 **Codebase and framework awareness:** Check how the existing codebase and its framework version APIs, schemas, migrations, and feature flags. Follow any schema, migration, or contract convention files that the codebase points to.
 

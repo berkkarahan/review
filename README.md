@@ -6,7 +6,7 @@
 
 A **framework-agnostic, codebase-aware, multi-lane code review skill** for AI coding agents, driven through a single `/review` entrypoint and written in **ASD-STE100 Simplified Technical English (STE)**.
 
-`review` plans each review from the diff shape and intent sources, delegates issue discovery to parallel subagent lanes with strict non-overlapping ownership, verifies high-severity findings using independent blind verifiers, filters noise through 10 deterministic quality gates (`G0`–`G9`), tracks findings across re-reviews (`carry`), and delivers a single, high-signal review report.
+`review` plans each review from the diff shape and PR-scoped intent sources, delegates candidate issue discovery to conditional parallel subagent lanes with strict non-overlapping ownership, verifies high-severity findings using independent blind verifiers, evaluates surviving candidates through a dedicated Phase 2.3a **`evaluation` lane** (`Gate G10`) so low-signal or out-of-scope observations never reach the PR, filters noise through 11 deterministic quality gates (`G0`–`G10`), tracks findings across re-reviews (`carry`), enforces a ≤1-sentence context refresher on every ID-citing question, and delivers a single, high-signal review report.
 
 ---
 
@@ -19,7 +19,7 @@ A **framework-agnostic, codebase-aware, multi-lane code review skill** for AI co
 5. [Effort Profiles & The Five Core Invariants](#effort-profiles--the-five-core-invariants)
 6. [Review Lanes & Non-Overlapping Ownership](#review-lanes--non-overlapping-ownership)
 7. [Framework-Agnostic Intent Discovery](#framework-agnostic-intent-discovery)
-8. [Deterministic Quality Gates (`G0`–`G9`) & Scripts](#deterministic-quality-gates-g0g9--scripts)
+8. [Deterministic Quality Gates (`G0`–`G10`) & Scripts](#deterministic-quality-gates-g0g10--scripts)
 9. [Stateful Re-Review & Carry System (`G9`)](#stateful-re-review--carry-system-g9)
 10. [Reviewer Persona, House Rules & Learned Memory](#reviewer-persona-house-rules--learned-memory)
 11. [ASD-STE100 Simplified Technical English](#asd-ste100-simplified-technical-english)
@@ -33,10 +33,12 @@ A **framework-agnostic, codebase-aware, multi-lane code review skill** for AI co
 ## Key Capabilities
 
 - **Single `/review` Entrypoint:** Reviews a GitHub PR (by URL, `<owner>/<repo>#<N>`, or `#<N>`), automatically infers the open PR for the current branch via `gh pr view`, falls back to **local branch diff mode** against the base branch when no PR exists, or configures reviewer persona and preferences interactively.
-- **Framework-Agnostic Intent Chain:** Automatically extracts promises, requirements, and acceptance criteria (`ACRow`) from PR descriptions, commit messages, linked tracker tickets/issues (GitHub, Jira, Linear, YouTrack, MCP resources), and planned specification files across any spec-driven framework (`.kiro/specs/`, `.specify/`, `openspec/`, `_bmad/`, `.cursor/plans/`, `.claude/plans/`, `.gemini/`, `docs/specs/`, `PLAN.md`, `PRD.md`, etc.).
-- **Parallel Multi-Lane Subagents with Zero Overlap:** Selects up to 6 concurrent specialist lanes (`adherence`, `code-quality`, `security`, `performance`, `compatibility`, `robustness`, `conventions`) based on diff-shape signals and assigns strict concern ownership so lanes never duplicate work.
-- **Blind Independent Verification:** Every `CRITICAL` and `HIGH` finding—plus every `Missing` or `Contradicted` acceptance criterion—is re-checked at `head_sha` by an independent verifier subagent that receives only the claim, location, and trigger (never the lane's reasoning).
-- **Deterministic Python Quality Gates (Stdlib-Only):** Uses zero-dependency Python scripts in [`scripts/`](./scripts) to map diff lines (`diff_map.py`), enforce schema/diff/trigger/confidence gates (`schema_lint.py`), reconcile carried findings across commits (`carry_findings.py`), compute mechanical verdicts (`breaker.py`), lint Simplified Technical English (`ste_lint.py`), and measure per-lane precision (`precision.py`).
+- **Strict PR-Diff Scoping:** Every finding is strictly bounded to lines added, modified, or removed in `diff.patch` (and PR-relevant promises). Pre-existing defects outside the diff are dropped deterministically by Gate `G2`, multi-PR/epic specs are scoped to this PR's changed deliverables, and broken-caller findings anchor on the causing diff line.
+- **Framework-Agnostic Intent Chain:** Automatically extracts PR-relevant promises, requirements, and acceptance criteria (`ACRow`) from PR descriptions, commit messages, linked tracker tickets/issues (GitHub, Jira, Linear, YouTrack, MCP resources), and planned specification files across any spec-driven framework (`.kiro/specs/`, `.specify/`, `openspec/`, `_bmad/`, `.cursor/plans/`, `.claude/plans/`, `.gemini/`, `docs/specs/`, `PLAN.md`, `PRD.md`, etc.).
+- **Conditional Parallel Candidate Lanes with Zero Overlap:** Selects up to 6 concurrent specialist candidate lanes (`adherence`, `code-quality`, `security`, `performance`, `compatibility`, `robustness`, `conventions`) based on diff-shape and changed-file signals (`code-quality` and `conventions` run conditionally rather than blindly on docs/lockfile-only diffs) with strict concern ownership so lanes never duplicate work.
+- **Blind Independent Verification + Evaluation Lane (`G10`):** Every `CRITICAL` and `HIGH` finding—plus every `Missing` or `Contradicted` acceptance criterion—is re-checked at `head_sha` by an independent verifier subagent that receives only the claim, location, and trigger (never the lane's reasoning). Surviving candidates are never taken for granted: the Phase 2.3a **`evaluation` lane** (`reference/lanes/evaluation.md`) classifies each candidate as `post`, `chat-only`, or `drop` and recalibrates inflated severities while preserving the safety floor.
+- **Mandatory ≤1-Sentence Question Refreshers:** Both author-facing questions (`Questions for the author`) and interactive human-in-the-loop prompts (`AskUserQuestion` options, per-finding selection, decline confirmations, memory prompts) must pair every referenced ID (`C1`, `H2`, `Q1`, `B1`, `AC3`, etc.) with at most one concise STE refresher sentence explaining what that item is—never bare IDs alone.
+- **Deterministic Python Quality Gates (Stdlib-Only):** Uses zero-dependency Python scripts in [`scripts/`](./scripts) to map diff lines (`diff_map.py`), enforce schema/diff/trigger/confidence gates (`schema_lint.py`), reconcile carried findings across commits (`carry_findings.py`), compute mechanical verdicts (`breaker.py`), lint Simplified Technical English and question refreshers (`ste_lint.py`), and measure per-lane precision (`precision.py`).
 - **Stateful Re-Review & Delta Carry:** Automatically detects prior reviews of the same PR, assigns stable finding IDs (`B1`, `D1`, `S1`, …), reviews only the commit delta (`<last_sha>..<head_sha>`) when history is linear, preserves user declines, and requires code evidence at `head_sha` to close open `CRITICAL`/`HIGH` findings or challenge prior declines.
 - **Configurable Persona & Memory Acquisition:** Adapts emphasis, comment structure, inline budgets, tone (`direct`, `constructive`, `mentor`, `strict`, `concise`), objective house rules (§8), and learned preferences (§9) via [`reference/persona.md`](./reference/persona.md) without ever compromising the safety floor or STE grammar.
 
@@ -55,32 +57,33 @@ flowchart TD
         P01 --> P02["0.2 Check Persona & Memory<br/>(reference/persona.md frontmatter)"]
         P02 --> P03["0.3 Build Bundle & Run G0 / G0b<br/>(pr.json, diff.patch, head/, base/, diff-map.json,<br/>existing-comments.json, signals.txt, rules-changed.txt)"]
         P03 --> P03Carry["0.3b Carry & Delta Check<br/>(scripts/carry_findings.py prepare)"]
-        P03Carry --> P04["0.4 Build Intent Chain<br/>(Specs, Plans, Tickets, PR Claims -> intent.md)"]
-        P04 --> P05["0.5 Select Lanes & Ownership<br/>(reference/lanes/selection.md)"]
+        P03Carry --> P04["0.4 Build PR-Scoped Intent Chain<br/>(Specs, Plans, Tickets, PR Claims -> intent.md)"]
+        P04 --> P05["0.5 Conditional Lane Selection & Ownership<br/>(reference/lanes/selection.md)"]
         P05 --> P06["0.6 Print Review Plan in STE"]
     end
 
-    subgraph Phase1 ["Phase 1: Fan Out (Concurrent Subagents)"]
-        P06 --> Lanes["Launch Selected Lanes in One Message<br/>(adherence | code-quality | security | performance |<br/>compatibility | robustness | conventions | critical-risk | skim)"]
+    subgraph Phase1 ["Phase 1: Fan Out (Concurrent Candidate Lanes)"]
+        P06 --> Lanes["Launch Selected Candidate Lanes in One Message<br/>(adherence | code-quality | security | performance |<br/>compatibility | robustness | conventions | critical-risk | skim)"]
     end
 
-    subgraph Phase2 ["Phase 2: Merge, Gate, Verify & Breaker"]
+    subgraph Phase2 ["Phase 2: Merge, Gate, Verify, Evaluate & Breaker"]
         Lanes --> G1["2.1 Gate G1: Schema Validation<br/>(scripts/schema_lint.py)"]
-        G1 --> G26["2.2 Gates G2-G6, Calibration & Dedupe<br/>(In-Diff, Trigger, Confidence, Already Raised, Linter)"]
+        G1 --> G26["2.2 Gates G2-G6, Calibration & Dedupe<br/>(Strict G2 Diff Drop, Trigger, Confidence, Already Raised, Linter)"]
         G26 --> Verify["2.3 Blind Verification<br/>(lanes/verifier.md on CRITICAL/HIGH & Missing/Contradicted ACs)"]
-        Verify --> G9["2.3b Gate G9: Reconcile Carry State<br/>(scripts/carry_findings.py reconcile)"]
+        Verify --> Eval["2.3a Evaluation Lane (Gate G10)<br/>(lanes/evaluation.md -> post | chat-only | drop + Severity Calibration)"]
+        Eval --> G9["2.3b Gate G9: Reconcile Carry State<br/>(scripts/carry_findings.py reconcile on post findings)"]
         G9 --> Breaker["2.4-2.5 Deterministic Breaker & Verdict<br/>(scripts/breaker.py -> verdict, phrase, event, band)"]
         Breaker --> Pareto["2.6 Pareto Cut (medium effort only)"]
     end
 
     subgraph Phase3 ["Phase 3: Persona Pass & STE"]
-        Pareto --> PersonaPass["Re-rank by Emphasis, Fold Minor/Suppressed,<br/>Apply Tone, Gate G7 (Inline Budget)"]
-        PersonaPass --> G8["Gate G8: STE Self-Check & Lint<br/>(scripts/ste_lint.py)"]
+        Pareto --> PersonaPass["Re-rank by Emphasis, Fold Minor/Suppressed,<br/>Apply Tone, Gate G7 (Chat-Only Excess Budget)"]
+        PersonaPass --> G8["Gate G8: STE & Question Refresher Lint<br/>(scripts/ste_lint.py)"]
     end
 
     subgraph Phase4 ["Phase 4: Deliver, Post & Learn"]
         G8 --> Report["4.1 Print Chat Report & Save Durable Artifacts<br/>(~/.claude/review/reviews/&lt;owner&gt;-&lt;repo&gt;-&lt;N&gt;-&lt;sha7&gt;/)"]
-        Report --> PostPrompt["4.2 Interactive Action Selection, Feedback Log<br/>(~/.claude/review/feedback.jsonl) & Preference Memory"]
+        Report --> PostPrompt["4.2 Refresher-Backed Interactive Action Selection,<br/>Feedback Log (~/.claude/review/feedback.jsonl) & Memory"]
         PostPrompt --> PostGH["4.3 Optional GitHub Review Posting<br/>(SHA Check, Diff-Line Map, G8 Check, Explicit Confirmation)"]
     end
 ```
@@ -89,11 +92,11 @@ flowchart TD
 
 | Phase | Owner | Responsibility | Key References & Scripts |
 | :--- | :--- | :--- | :--- |
-| **Phase 0: Plan** | Lead (inline) | Resolves target and effort level, checks persona status, builds the immutable review bundle (`bundle_dir`) once, detects prior reviews for carry/delta mode, discovers the intent chain (`intent.md`), selects lanes, and prints the STE review plan. | [`bundle.md`](./reference/bundle.md), [`intent.md`](./reference/intent.md), [`effort/levels.md`](./reference/effort/levels.md), [`lanes/selection.md`](./reference/lanes/selection.md), [`diff_map.py`](./scripts/diff_map.py), [`carry_findings.py`](./scripts/carry_findings.py) |
-| **Phase 1: Fan Out** | Subagent lanes | Runs all selected lanes concurrently in a single message. Every lane reads the shared bundle without re-fetching the PR, stays within its assigned `FOCUS` and `OWNERSHIP`, and returns structured YAML findings (`schema/finding.md`). | [`lanes/prompt.md`](./reference/lanes/prompt.md), [`lanes/lane-rules.md`](./reference/lanes/lane-rules.md), [`schema/finding.md`](./reference/schema/finding.md), [`lanes/*.md`](./reference/lanes) |
-| **Phase 2: Merge & Verify** | Lead + Verifiers | Validates lane outputs (`G1`), applies deterministic gates (`G2`–`G6`), recalibrates severities, deduplicates findings across lanes, dispatches blind verifier subagents for `CRITICAL`/`HIGH` and broken ACs, reconciles carried state (`G9`), and runs `breaker.py` to compute the authoritative verdict and quality-gate band. | [`gates.md`](./reference/gates.md), [`lanes/verifier.md`](./reference/lanes/verifier.md), [`output/verdict.md`](./reference/output/verdict.md), [`schema_lint.py`](./scripts/schema_lint.py), [`carry_findings.py`](./scripts/carry_findings.py), [`breaker.py`](./scripts/breaker.py) |
-| **Phase 3: Persona Pass** | Lead | Re-ranks findings according to `persona.md` emphasis and learned preferences, folds minor or suppressed items, formats comments in the configured `voice.tone`, enforces posted inline comment caps (`G7`), rewrites all human-read text in ASD-STE100, and verifies compliance with `ste_lint.py` (`G8`). | [`output/persona-pass.md`](./reference/output/persona-pass.md), [`persona.md`](./reference/persona.md), [`output/ste.md`](./reference/output/ste.md), [`output/ste-examples.md`](./reference/output/ste-examples.md), [`ste_lint.py`](./scripts/ste_lint.py) |
-| **Phase 4: Deliver & Post** | Lead | Prints the report and AC matrix to chat, archives durable artifacts to `~/.claude/review/reviews/`, logs user keep/drop decisions to `~/.claude/review/feedback.jsonl`, saves generalizable preferences to `persona.md` (when `memory` is `ask` or `enabled`), and posts to GitHub only after verifying `head_sha` has not moved and receiving explicit user confirmation of the exact payload. | [`output/report.md`](./reference/output/report.md), [`output/posting.md`](./reference/output/posting.md), [`precision.py`](./scripts/precision.py) |
+| **Phase 0: Plan** | Lead (inline) | Resolves target and effort level, checks persona status, builds the immutable review bundle (`bundle_dir`) and `diff-map.json` once, detects prior reviews for carry/delta mode, discovers the PR-scoped intent chain (`intent.md`), selects conditional lanes, and prints the STE review plan. | [`bundle.md`](./reference/bundle.md), [`intent.md`](./reference/intent.md), [`effort/levels.md`](./reference/effort/levels.md), [`lanes/selection.md`](./reference/lanes/selection.md), [`diff_map.py`](./scripts/diff_map.py), [`carry_findings.py`](./scripts/carry_findings.py) |
+| **Phase 1: Fan Out** | Subagent lanes | Runs all selected candidate lanes concurrently in a single message. Every lane reads the shared bundle without re-fetching the PR, reviews strictly within `diff.patch` and its assigned `FOCUS` / `OWNERSHIP`, and returns structured YAML findings (`schema/finding.md`). | [`lanes/prompt.md`](./reference/lanes/prompt.md), [`lanes/lane-rules.md`](./reference/lanes/lane-rules.md), [`schema/finding.md`](./reference/schema/finding.md), [`lanes/*.md`](./reference/lanes) |
+| **Phase 2: Merge, Verify & Evaluate** | Lead + Verifiers + Evaluator | Validates lane outputs (`G1`), applies deterministic gates (`G2` drops out-of-diff items, `G3`–`G6`), recalibrates severities, deduplicates findings, dispatches blind verifier subagents for `CRITICAL`/`HIGH` and broken ACs, runs the `evaluation` lane (`G10`) to classify `post` / `chat-only` / `drop`, reconciles carried `post` state (`G9`), and runs `breaker.py` to compute the authoritative verdict and quality-gate band. | [`gates.md`](./reference/gates.md), [`lanes/verifier.md`](./reference/lanes/verifier.md), [`lanes/evaluation.md`](./reference/lanes/evaluation.md), [`output/verdict.md`](./reference/output/verdict.md), [`schema_lint.py`](./scripts/schema_lint.py), [`carry_findings.py`](./scripts/carry_findings.py), [`breaker.py`](./scripts/breaker.py) |
+| **Phase 3: Persona Pass** | Lead | Re-ranks evaluated findings according to `persona.md` emphasis and learned preferences, folds minor or suppressed items, shapes comments in `voice.tone`, moves excess items to chat-only (`G7`), rewrites all human-read text in ASD-STE100 with ≤1-sentence question refreshers, and verifies compliance with `ste_lint.py` (`G8`). | [`output/persona-pass.md`](./reference/output/persona-pass.md), [`persona.md`](./reference/persona.md), [`output/ste.md`](./reference/output/ste.md), [`output/ste-examples.md`](./reference/output/ste-examples.md), [`ste_lint.py`](./scripts/ste_lint.py) |
+| **Phase 4: Deliver & Post** | Lead | Prints the report and AC matrix to chat, archives durable artifacts to `~/.claude/review/reviews/`, logs user and evaluation decisions (`dropped-by-eval`, `posted`, `chat-only`, `dropped-by-user`) to `~/.claude/review/feedback.jsonl`, saves generalizable preferences to `persona.md` (with 1-sentence refreshers when `memory: ask`), and posts to GitHub only after verifying `head_sha` and receiving explicit confirmation. | [`output/report.md`](./reference/output/report.md), [`output/posting.md`](./reference/output/posting.md), [`precision.py`](./scripts/precision.py) |
 
 ---
 
@@ -189,10 +192,10 @@ All options can be passed as explicit flags or stated in natural language:
 
 Regardless of whether a review runs at `high`, `medium`, `low`, or `skim`, **five rules always hold** ([`reference/effort/levels.md`](./reference/effort/levels.md)):
 
-1. **Safety Floor:** No lane cap, Pareto cut, budget gate (`G7`), or persona preference may drop or downgrade a verified `CRITICAL` or `HIGH` finding.
-2. **ASD-STE100 Compliance:** Every human-read text (the Phase 0.6 plan, the chat report, the posted review body, inline comments, and author questions) is written in ASD-STE100 Simplified Technical English.
-3. **Mandatory Gates:** `G0` (PR state), `G2`–`G4` (in-diff, concrete trigger, confidence—by script at `high`/`medium` and inline at `low`/`skim`), and `G8` (`ste_lint.py`) execute at every level.
-4. **Verdict Before Cuts:** The verdict, GitHub review event, and quality-gate band are computed on the full merged and verified finding set *before* any Pareto cut (`medium`) or inline budget folding (`G7`). Cuts only affect display volume, never the verdict.
+1. **Safety Floor:** No lane cap, Pareto cut, budget gate (`G7`), evaluation lane (`G10`), or persona preference may drop or downgrade a safety-floor verified `CRITICAL` or `HIGH` finding.
+2. **ASD-STE100 Compliance:** Every human-read text (the Phase 0.6 plan, the chat report, the posted review body, inline comments, and author/user questions) is written in ASD-STE100 Simplified Technical English, and every ID-citing question includes a ≤1-sentence refresher.
+3. **Mandatory Gates:** `G0` (PR state), `G1`–`G4` (`diff_map.py` + `schema_lint.py`, dropping out-of-diff items under strict PR-diff scope), `G8` (`ste_lint.py`), and `G10` (Phase 2.3a evaluation, subagent at `high`/`medium` and inline at `low`/`skim`) execute at every level.
+4. **Verdict Before Cuts:** The verdict, GitHub review event, and quality-gate band are computed on the evaluated `post` finding set *before* any Pareto cut (`medium`) or inline budget folding (`G7`). Cuts only affect display volume, never the verdict.
 5. **Deterministic Breaker:** [`scripts/breaker.py`](./scripts/breaker.py) runs at all four levels and is the sole authority for the verdict, phrase, GitHub event, and quality-gate band.
 
 ### Automatic Effort Resolution (`--effort=auto`)
@@ -210,12 +213,13 @@ When `--effort` is omitted or set to `auto`, Phase 0.3 selects the profile using
 
 | Dimension | `high` (Baseline) | `medium` | `low` | `skim` |
 | :--- | :--- | :--- | :--- | :--- |
-| **Bundle Context** | Full (`head/` copies + up to 20 context files / 3k LOC + `base/` rules) | Full (`head/` copies + up to 10 context files / 1.5k LOC + `base/` rules) | Reduced diff only; no `head/` copy, no context files | `diff.skim.patch` + `lock.patch` only; no `head/`, no `signals.txt` |
-| **Intent Pack** | Full (specs, plans, tickets, issues, PR claims) | Full | Compact (ACs/promises, must-not-change boundaries, PR claims, conflicts) | PR title, description, and commit headlines only (no specs/tickets) |
-| **Phase 1 Lanes** | Up to **6** parallel lanes | Up to **3** parallel lanes (wider folding into `conventions`) | Lead inline if reduced diff < 400 lines; else **1** `critical-risk` lane | Exactly **1** `skim` subagent |
+| **Bundle Context** | Full (`head/` copies + up to 20 context files / 3k LOC + `base/` rules + `diff-map.json`) | Full (`head/` copies + up to 10 context files / 1.5k LOC + `base/` rules + `diff-map.json`) | Reduced diff only; no `head/` copy, no context files (`diff-map.json` built for `G2`) | `diff.skim.patch` + `lock.patch` + `diff-map.json`; no `head/`, no `signals.txt` |
+| **Intent Pack** | Full (PR-scoped specs, plans, tickets, issues, PR claims) | Full (PR-scoped) | Compact (ACs/promises, must-not-change boundaries, PR claims, conflicts) | PR title, description, and commit headlines only (no specs/tickets) |
+| **Phase 1 Lanes** | Up to **6** parallel conditional lanes | Up to **3** parallel conditional lanes (wider folding into `conventions`) | Lead inline if reduced diff < 400 lines; else **1** `critical-risk` lane | Exactly **1** `skim` subagent |
 | **Severities Reported** | All (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `QUESTION`) | All (Pareto-ordered; ≤ 5 non-blocking per lane) | `CRITICAL` and `HIGH` only | `CRITICAL`, `HIGH`, and ≤ 3 `QUESTION`s |
-| **AC Matrix** | All rows shown/archived | All evaluated; only non-`Met` rows returned | Only `Missing` and `Contradicted` rows (no test column) | None |
+| **AC Matrix** | All PR-relevant rows shown/archived | All evaluated; only non-`Met` rows returned | Only `Missing` and `Contradicted` rows (no test column) | None |
 | **Blind Verifiers** | Up to **6** verifier subagents + inline MEDIUM check | Up to **2** verifier subagents (`CRITICAL`/`HIGH` only) + inline MEDIUM check | Lead verifies inline (no subagents) | Lead verifies inline (no subagents) |
+| **Evaluation (`G10`)** | 1 `evaluation` subagent (`lanes/evaluation.md`) | 1 `evaluation` subagent (`lanes/evaluation.md`) | Lead evaluates inline (`lanes/evaluation.md` rubric) | Lead evaluates inline (`lanes/evaluation.md` rubric) |
 | **Quality Gate Band** | Full (`PASS` / `CONCERNS` / `FAIL`) | Computed on active lanes; marked `(partial)` if folded | `n/a` | `n/a` |
 | **Persona Pass** | Full (re-rank, fold, tone, `G7`, STE, `G8`) | Full on Pareto set | STE rewrite + `G8` only | STE rewrite + `G8` only |
 | **`APPROVE` Allowed?** | Yes | Yes | **Never** (event is always `COMMENT`) | Only when in-profile, CI is `passing`, and `!author_is_me` |
@@ -236,17 +240,18 @@ Phase 0.3 scans changed paths and diff content to emit diff-shape signals into `
 
 ### Lane Selection & Ownership Table
 
-Each concern has **one owner lane** ([`reference/lanes/selection.md`](./reference/lanes/selection.md)). When an owner lane runs, other lanes are explicitly instructed to skip its territory so findings are never duplicated:
+Phase 1 lanes are **candidate generators** and are never taken for granted. Returning `FINDINGS: []` or `STATUS: abstained` is expected when nothing concrete is wrong in `diff.patch`. Each concern has **one owner lane** ([`reference/lanes/selection.md`](./reference/lanes/selection.md)). When an owner lane runs, other lanes are explicitly instructed to skip its territory so findings are never duplicated:
 
 | Lane | Stable ID Prefix | Trigger Condition | Method File | Exclusive Ownership (Skipped by Other Lanes When Active) |
 | :--- | :---: | :--- | :--- | :--- |
-| **`adherence`** | `B` | **Always** (1 lane per planned doc/spec, max 3 at `high`, 1 at `medium`) | [`lanes/adherence.md`](./reference/lanes/adherence.md) | Intent, promises (`P1..Pn`), acceptance criteria (`AC1..ACn`), scope boundaries, and undocumented behavior changes. |
-| **`code-quality`** | `D` | **Always** (unless `--no-inherit`) | [`lanes/checklist-code-quality.md`](./reference/lanes/checklist-code-quality.md) | Logic errors, edge cases, error handling, test adequacy, and maintainability (defers security/perf/naming when those owner lanes run). |
-| **`conventions`** | `V` | **Always** | [`lanes/conventions.md`](./reference/lanes/conventions.md) | Naming, typing, reuse, codebase structure, repo instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursor/rules/*`, etc.), `persona.md` §8 house rules, and §9 learned preferences. |
-| **`security`** | `S` | `auth`, `input`, or `deps` signal (or in `persona.md` `emphasis`) | [`lanes/checklist-security.md`](./reference/lanes/checklist-security.md) | Authn/authz, injection, secrets, multi-tenancy isolation, dependency risk, and STRIDE threats. |
+| **`adherence`** | `B` | **Always** (1 lane per PR-relevant planned doc/spec, max 3 at `high`, 1 at `medium`) | [`lanes/adherence.md`](./reference/lanes/adherence.md) | PR-scoped intent, promises (`P1..Pn`), acceptance criteria (`AC1..ACn`), scope boundaries, and undocumented behavior changes. |
+| **`code-quality`** | `D` | **Conditional:** executable source or test files added/modified in `files.txt` (unless `--no-inherit`) | [`lanes/checklist-code-quality.md`](./reference/lanes/checklist-code-quality.md) | Logic errors, edge cases, error handling, test adequacy, and maintainability in changed hunks (defers security/perf/naming when those owner lanes run). |
+| **`conventions`** | `V` | **Conditional:** executable source files change, `rules-changed.txt` is non-empty, or active `persona.md` §8/§9 rules apply | [`lanes/conventions.md`](./reference/lanes/conventions.md) | Naming, typing, reuse, structure, repo instruction files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.cursor/rules/*`, etc.), `persona.md` §8 house rules, and §9 learned preferences. |
+| **`security`** | `S` | `auth`, `input`, or `deps` signal (or in `persona.md` `emphasis`) | [`lanes/checklist-security.md`](./reference/lanes/checklist-security.md) | Authn/authz, injection, secrets, multi-tenancy isolation, dependency risk, and STRIDE threats in changed hunks. |
 | **`performance`** | `P` | `perf` or `data` signal (or in `persona.md` `emphasis`) | [`lanes/checklist-performance.md`](./reference/lanes/checklist-performance.md) | Query count, N+1 queries, missing pagination, unbounded memory, and synchronous HTTP/I/O inside loops (static analysis only). |
 | **`compatibility`** | `A` | `contract` or `data` signal (or in `persona.md` `emphasis`) | [`lanes/checklist-compatibility.md`](./reference/lanes/checklist-compatibility.md) | Public API/schema contract stability, breaking consumer changes, and zero-downtime migration rollout safety. |
 | **`robustness`** | `R` | `async` signal (or in `persona.md` `emphasis`) | [`lanes/checklist-robustness.md`](./reference/lanes/checklist-robustness.md) | Concurrency, race conditions, transaction boundaries, idempotency, and side-effect ordering. |
+| **`evaluation`** | `n/a` | **Phase 2.3a (Gate G10)** when ≥ 1 candidate finding survives Phase 2.3 (inline at `low`/`skim`) | [`lanes/evaluation.md`](./reference/lanes/evaluation.md) | Evaluates candidate findings for strict diff causality, pragmatic signal, channel routing (`post` \| `chat-only` \| `drop`), and non-floor severity calibration. |
 | **`critical-risk`** | `X` | `low` effort profile | [`lanes/critical-risk.md`](./reference/lanes/critical-risk.md) | Consolidated high-severity pass focusing strictly on `CRITICAL` and `HIGH` bugs, security flaws, data loss, and broken core promises. |
 | **`skim`** | `K` | `skim` effort profile | [`effort/skim-agent.md`](./reference/effort/skim-agent.md) | Fast single-subagent pass on small/trivial PRs checking for `CRITICAL`/`HIGH` defects and up to 3 `QUESTION`s. |
 
@@ -254,7 +259,7 @@ Each concern has **one owner lane** ([`reference/lanes/selection.md`](./referenc
 
 ## Framework-Agnostic Intent Discovery
 
-Unlike code reviewers that only inspect the diff in isolation, Phase 0.4 ([`reference/intent.md`](./reference/intent.md)) constructs `<bundle_dir>/intent.md` as the single source of truth for **what the change promises to accomplish**:
+Unlike code reviewers that only inspect the diff in isolation, Phase 0.4 ([`reference/intent.md`](./reference/intent.md)) constructs `<bundle_dir>/intent.md` as the PR-scoped source of truth for **what the current PR promises to accomplish**. Multi-phase or epic specs are scoped strictly to the deliverables claimed by this PR or touching files in `diff.patch` (other phases are noted under `Sources` as deferred):
 
 1. **Explicitly Named or Linked Specifications:** Reads `--spec` paths/URLs, repo pointers, GitHub issues/PRs, and external tracker tickets or docs reachable via MCP tools (Jira, Linear, YouTrack, Notion, Confluence, etc.). Unreadable external links are recorded transparently under `Gaps`—never guessed.
 2. **Repository & Branch Planned Documents:** Automatically discovers spec and plan artifacts across any spec-driven development framework or agentic planning workflow:
@@ -274,9 +279,9 @@ When intent sources conflict, the conflict is recorded in `intent.md` under `Con
 
 ---
 
-## Deterministic Quality Gates (`G0`–`G9`) & Scripts
+## Deterministic Quality Gates (`G0`–`G10`) & Scripts
 
-Gates keep false positives and noise out of the review report ([`reference/gates.md`](./reference/gates.md)). Wherever a Python script is designated, the lead agent **must** run the script rather than judging by eye.
+Gates keep false positives, low-signal noise, and out-of-diff findings out of the PR review ([`reference/gates.md`](./reference/gates.md)). Wherever a Python script is designated, the lead agent **must** run the script rather than judging by eye.
 
 ### Gate Summary Table
 
@@ -284,15 +289,16 @@ Gates keep false positives and noise out of the review report ([`reference/gates
 | :---: | :---: | :--- | :--- | :--- |
 | **`G0`** | `0.3` | GitHub PR `state` is `OPEN`. | Stop immediately and report `"PR is closed or merged."` | `pr.json` |
 | **`G0b`** | `0.3` | PR is not a draft, bot-authored, or lockfile-only. | Note draft status in `Context`; switch bot or lockfile-only PRs to `skim` unless `--effort` was explicitly set. | `pr.json`, `files.txt` |
-| **`G1`** | `2.1` | Required finding schema fields exist, enums are valid, title ≤ 40 chars, `CRITICAL` has `code_example`. | `retry_lane`: re-request failing findings once; after a second failure mark the lane `NOT ASSESSED`. | [`scripts/schema_lint.py`](./scripts/schema_lint.py) |
-| **`G2`** | `2.2` | Finding `location` (or at least one site in `locations`) sits on an added right-side line of `diff.patch`. | `move_preexisting`: move to chat-only `"Pre-existing, not introduced by this PR"`. Never post inline. | [`scripts/diff_map.py`](./scripts/diff_map.py) + [`scripts/schema_lint.py`](./scripts/schema_lint.py) |
+| **`G1`** | `2.1` | Required finding schema fields exist, enums are valid, title ≤ 40 chars, `CRITICAL` has `code_example`, valid `path:line` format. | `retry_lane`: re-request failing findings once; after a second failure mark the lane `NOT ASSESSED`. | [`scripts/schema_lint.py`](./scripts/schema_lint.py) |
+| **`G2`** | `2.2` | Finding `location` sits on an added right-side line of `diff.patch` (intent-only locations restricted to intent lanes; out-of-diff `locations` entries pruned). | `drop`: discard the finding completely (`out-of-diff`). Never report or post pre-existing code defects. | [`scripts/diff_map.py`](./scripts/diff_map.py) + [`scripts/schema_lint.py`](./scripts/schema_lint.py) |
 | **`G3`** | `2.2` | `CRITICAL` and `HIGH` findings specify a concrete `trigger` (input/state + wrong result). | `downgrade`: cap severity at `MEDIUM`, or convert to `QUESTION` if the cause is unknown. | [`scripts/schema_lint.py`](./scripts/schema_lint.py) |
 | **`G4`** | `2.2` | No `MEDIUM` or `LOW` finding has `LOW` confidence. | `drop`: remove finding and increment the dropped counter in the report footer. | [`scripts/schema_lint.py`](./scripts/schema_lint.py) |
 | **`G5`** | `2.2` | No existing PR review comment or bot comment covers the same file within ±5 lines and the same flaw. | Drop finding and add `"Already raised: <n>"` to `Context` (never drops verified `CRITICAL`/`HIGH`). | `existing-comments.json` |
 | **`G6`** | `2.2` | Finding is not a formatting/import/style nit or a rule enforced by the repository's CI linter/typechecker. | Drop finding and count under `linter` in the footer (never drops verified `CRITICAL`/`HIGH`). | `statusCheckRollup` in `pr.json` + repo lint config |
-| **`G7`** | `3` | Posted inline comments ≤ `voice.max_inline` (default 8), ≤ 8 `MEDIUM` findings total, `LOW` folded, ≤ 3 house-rule `LOW`. | Fold excess non-blocking items into `"Also:"` or chat-only. Verified `CRITICAL`/`HIGH` are never cut. | Persona pass step 9 |
-| **`G8`** | `3` & `4.3` | `ste_lint.py` exits `0` on the report, review body, and inline comments, and all finding `path:line` evidence is preserved. | Rewrite failing sentences in STE and re-run `ste_lint.py` (up to 2 attempts). | [`scripts/ste_lint.py`](./scripts/ste_lint.py) |
-| **`G9`** | `2.3b` | Every earlier open `CRITICAL`/`HIGH` is re-raised, cleared with code evidence, or carried; no decline is repeated without challenging its reason; all findings get stable IDs. | Reconcile state deterministically via `carry_findings.py reconcile`. | [`scripts/carry_findings.py`](./scripts/carry_findings.py) |
+| **`G7`** | `3` | Posted inline comments ≤ `voice.max_inline` (default 8), ≤ 8 `MEDIUM` findings total, `LOW` folded, ≤ 3 house-rule `LOW`. | Move excess non-blocking items strictly to `Not posted (chat only):` in chat. Never dump excess items into the posted PR body. Safety-floor `CRITICAL`/`HIGH` are never cut. | Persona pass step 9 |
+| **`G8`** | `3` & `4.3` | `ste_lint.py` exits `0` on the report, review body, and inline comments, all `path:line` evidence is preserved, and every ID-citing question includes a ≤1-sentence refresher. | Rewrite failing sentences or add missing refresher and re-run `ste_lint.py` (up to 2 attempts). | [`scripts/ste_lint.py`](./scripts/ste_lint.py) |
+| **`G9`** | `2.3b` | Every earlier open `CRITICAL`/`HIGH` is raised again, cleared with code evidence, or carried; no decline is repeated without answering its reason; all `post` findings get stable IDs. | Reconcile state deterministically via `carry_findings.py reconcile`. | [`scripts/carry_findings.py`](./scripts/carry_findings.py) |
+| **`G10`** | `2.3a` | Surviving candidate findings pass strict diff causality, pragmatic signal, channel routing (`post` \| `chat-only` \| `drop`), and severity calibration. | Discard `drop` items (`evaluated-out`), keep `chat-only` out of `breaker.py` and PR comments, and keep `post` items. Safety-floor findings always stay `post`. | [`lanes/evaluation.md`](./reference/lanes/evaluation.md) |
 
 ### CLI Reference for `scripts/`
 
@@ -396,13 +402,14 @@ All human-facing output produced by `review` follows **ASD-STE100 Simplified Tec
 - **Descriptive sentences (≤ 25 words, active voice):** Clearly state what fails, when (`If <condition>, <result>.`), and why it matters.
 - **Paragraph limit:** At most 6 sentences per paragraph; longer sequences use vertical lists.
 - **No `-ing` verb forms, hedges, chat abbreviations, or semicolons:** Eliminates `"I think"`, `"maybe"`, `"wdyt"`, `"IMO"`, and ambiguous gerunds outside the technical allowlist.
+- **Mandatory ≤1-sentence question refreshers:** Every author question and every human-in-the-loop prompt that cites an item ID (`C1`, `H2`, `Q1`, `B1`, `X1`, `AC2`, `P1`, etc.) includes at most 1 short STE refresher sentence explaining what the item is—enforced deterministically by `ste_lint.py`.
 - **Verbatim preservation:** Code spans, `path:line` anchors, requirement IDs (`AC1`, `FR-2`), ticket keys, SHAs, and quoted spec text remain untouched and are verified against `findings.json` by `ste_lint.py --findings`.
 
 ---
 
 ## Security, Safety & Privacy Guarantees
 
-1. **Untrusted Data Isolation (Prompt Injection Defense):** PR descriptions, commit messages, ticket bodies, spec documents, existing review comments, and source code comments are treated strictly as untrusted data. Lanes and the lead never execute instructions found inside reviewed artifacts. Reviewer-directed text discovered in files is surfaced in a chat-only `Review safety:` alert (`[injection]`) and is never obeyed.
+1. **Untrusted Data Isolation (Prompt Injection Defense):** PR descriptions, commit messages, ticket bodies, spec documents, existing review comments, and source code comments are treated strictly as untrusted data. Lanes and the lead never execute instructions found inside reviewed artifacts. Reviewer-directed text discovered in unchanged files is surfaced via `SAFETY_ALERTS` in a chat-only `Review safety:` banner and is never obeyed.
 2. **Shell Parameter Sanitization:** All repository identifiers (`owner`, `repo`, `N`) and commit SHAs (`^[0-9a-f]{40}$`) are validated against strict regexes before any shell command runs.
 3. **Base-Commit Rule Verification (`rules-changed.txt`):** Repository rule files (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `CONTRIBUTING.md`, `.cursor/rules/**`, `.claude/rules/**`, `.github/copilot-instructions.md`, etc.) are fetched and evaluated at `base_sha` (`<bundle_dir>/base/<path>`), preventing a PR from weakening a repository rule file and having its own code judged against the weakened rule. Any edit to a rule file automatically triggers a `High risk: rule files edited` banner for the human reviewer.
 4. **Bundle Secret Denylist:** Phase 0.3 never copies `.env*`, `*.pem`, `id_rsa`, `credentials.json`, `node_modules/`, lockfiles, or binaries into `<bundle_dir>/head/`.
@@ -435,9 +442,10 @@ review/
 │   │   ├── selection.md                      # Phase 0.5: Signal-to-lane mapping, caps, folding, & lane ownership
 │   │   ├── prompt.md                         # Phase 1: Concurrent subagent prompt template
 │   │   ├── lane-rules.md                     # Universal rules and prompt-injection safety for all lanes
-│   │   ├── adherence.md                      # Custom method: verifies code & tests against intent.md (ACs & promises)
+│   │   ├── adherence.md                      # Custom method: verifies PR-scoped code & tests against intent.md
 │   │   ├── conventions.md                    # Custom method: repo rule files, codebase idioms, persona §8 & §9
 │   │   ├── critical-risk.md                  # Low-effort method: CRITICAL/HIGH correctness, security, and data safety
+│   │   ├── evaluation.md                     # Phase 2.3a (Gate G10): evaluates candidate findings (post | chat-only | drop)
 │   │   ├── verifier.md                       # Phase 2.3: Blind verification subagent prompt
 │   │   ├── checklist-code-quality.md         # Checklist for code-quality lane
 │   │   ├── checklist-security.md             # Checklist for security lane
@@ -447,7 +455,7 @@ review/
 │   ├── output/
 │   │   ├── verdict.md                        # Phase 2.4-2.5: Breaker invocation and verdict counting rules
 │   │   ├── persona-pass.md                   # Phase 3: Re-ranking, folding, tone shaping, Gate G7, & interactive setup
-│   │   ├── ste.md                            # ASD-STE100 grammar rules, fixed headings, and self-check checklist
+│   │   ├── ste.md                            # ASD-STE100 grammar rules, fixed headings, question refreshers, & self-check
 │   │   ├── ste-examples.md                   # Paraphrased reviewer patterns mapped to compliant STE sentences
 │   │   ├── report.md                         # Phase 4.1: Chat report template, AC matrix rules, & durable archiving
 │   │   └── posting.md                        # Phase 4.3: Head SHA verification, diff-line mapping, & GitHub API posting
@@ -459,20 +467,24 @@ review/
     ├── carry_findings.py                     # Prepares, reconciles, and marks carried findings across review rounds
     ├── diff_map.py                           # Parses unified diffs into right-side added/context line maps
     ├── precision.py                          # Computes keep rates per lane, severity, and rule from feedback.jsonl
-    ├── schema_lint.py                        # Enforces Gates G1 (schema), G2 (in-diff), G3 (trigger), & G4 (confidence)
-    ├── ste_lint.py                           # Enforces Gate G8 (ASD-STE100 sentence/word/evidence checks)
+    ├── schema_lint.py                        # Enforces Gates G1 (schema), G2 (strict PR-diff), G3 (trigger), & G4 (confidence)
+    ├── ste_lint.py                           # Enforces Gate G8 (ASD-STE100, question refreshers, and evidence checks)
     └── tests/                                # Self-contained regression test suites
         ├── breaker/
-        │   ├── test_breaker.py               # Table-driven tests for breaker.py across all effort levels
+        │   ├── test_breaker.py               # Table-driven tests for breaker.py across all effort levels & evaluation floor
         │   ├── compare_schema_lint.py        # Regression harness comparing schema_lint.py against fixtures
         │   ├── diff-map.json                 # Test fixture diff map
         │   ├── legacy-findings.json          # Pre-carry findings fixture
         │   └── new-fields-findings.json      # Carry-enabled findings fixture
-        └── carry/
-            ├── run_tests.py                  # Subprocess CLI test suite for carry_findings.py
-            ├── prev_round1.json              # Round 1 findings fixture
-            ├── new_round2.json               # Round 2 delta findings fixture
-            └── prev_legacy.json              # Legacy ID migration fixture
+        ├── carry/
+        │   ├── run_tests.py                  # Subprocess CLI test suite for carry_findings.py
+        │   ├── prev_round1.json              # Round 1 findings fixture
+        │   ├── new_round2.json               # Round 2 delta findings fixture
+        │   └── prev_legacy.json              # Legacy ID migration fixture
+        ├── schema_lint/
+        │   └── test_schema_lint.py           # Regression suite for strict G1-G4 gates and kept_locations pruning
+        └── ste_lint/
+            └── test_ste_lint.py              # Regression suite for STE, question-refresher, and bare-ID checks
 ```
 
 ---
@@ -482,13 +494,19 @@ review/
 All deterministic scripts include self-contained regression tests using only the Python standard library:
 
 ```bash
-# Run the table-driven verdict and quality-gate breaker test suite
+# Run the table-driven verdict, evaluation safety-floor, and quality-gate breaker test suite
 python3 -I -B scripts/tests/breaker/test_breaker.py
 
 # Run the stateful carry and ID reconciliation test suite
 python3 -I -B scripts/tests/carry/run_tests.py
 
-# Verify schema_lint.py against the test fixtures
+# Run the Gate G1-G4 strict PR-diff schema linter test suite
+python3 -I -B scripts/tests/schema_lint/test_schema_lint.py
+
+# Run the Gate G8 STE and question-refresher linter test suite
+python3 -I -B scripts/tests/ste_lint/test_ste_lint.py
+
+# Verify schema_lint.py against the carry-enabled test fixture
 python3 -I -B scripts/schema_lint.py scripts/tests/breaker/new-fields-findings.json scripts/tests/breaker/diff-map.json
 ```
 

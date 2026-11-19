@@ -7,7 +7,7 @@
 Five rules hold at every level, `skim` included:
 - **Safety floor.** No cap, cut or fold may drop a CRITICAL or HIGH finding. A lane that has more CRITICAL or HIGH findings than its cap returns all of them. The Pareto cut keeps every verified CRITICAL and HIGH.
 - **STE.** Every text that a person reads is still in ASD-STE100 (`output/ste.md` §Simplified Technical English).
-- **Gates.** G0 (PR state) and G8 (STE lint) run at every level. G2 to G4 run at every level, by script at `high` and `medium` and inline by the lead at `low` and `skim`. No gate drops a verified CRITICAL or HIGH.
+- **Gates.** G0 (PR state), G1–G4 (`scripts/diff_map.py` and `scripts/schema_lint.py`, which drops out-of-diff items under strict PR-diff scope), G8 (`scripts/ste_lint.py` for STE and question refreshers), and G10 (Phase 2.3a evaluation, subagent at `high`/`medium` and inline at `low`/`skim`) execute at every level. Neither Gate G10 nor any other gate may drop or lower a safety-floor CRITICAL or HIGH.
 - **Verdict before cuts.** Compute the verdict, the event and the quality gate from the full merged set, before any Pareto cut or report reduction. A cut changes only what the report shows, never the verdict.
 - **Breaker.** `scripts/breaker.py` runs at all four levels. It sets the verdict, the event and the quality gate. Run it with `--effort <level>`. At `low` and `skim` the band is `n/a`. At `skim` also pass `--in-profile` (when the PR is in profile) and `--ci <value>`. At `skim`, an `INVALID` result from the breaker is a skim failure (`effort/skim.md` §Skim verification). When an earlier `findings.json` exists and `--fresh` is not set (`gates.md` G9), `carry_findings.py prepare` and `reconcile` also run at every level. They cost no tokens. At `low` and `skim` the lead verifies inline, so it sets `verified: confirmed` on each CRITICAL or HIGH that it confirms. Without it, the safety floor in G9 cannot fire.
 
@@ -22,9 +22,10 @@ Five rules hold at every level, `skim` included:
 | What lanes look for | all severities | all severities, Pareto order, at most 5 non-blocking findings per lane | CRITICAL and HIGH only | CRITICAL and HIGH, plus at most 3 QUESTION findings |
 | AC matrix | all rows | all rows evaluated, only non-`Met` rows returned | only `Missing` and `Contradicted` rows, no test column | none |
 | Verification | ≤ 6 verifiers | ≤ 2 verifiers, CRITICAL and HIGH only | lead verifies inline, no verifier subagents | lead verifies inline, no verifier subagents |
+| Evaluation (Phase 2.3a, G10) | 1 `evaluation` subagent (when candidates survive 2.3) | 1 `evaluation` subagent (when candidates survive 2.3) | lead evaluates inline (`lanes/evaluation.md` rubric) | lead evaluates inline (`lanes/evaluation.md` rubric) |
 | Quality gate | full | computed on the lanes that ran, marked `partial` when a lane was folded | `n/a` | `n/a` |
 | Persona pass | full | full on the Pareto set | STE rewrite only, no re-rank or fold (there is nothing below HIGH) | STE rewrite only, no re-rank or fold |
-| Gates (`gates.md`) | G0–G8 | G0–G8 | G0, G2–G4 inline by the lead, G5 if < 30 comments, G7 n/a, G8 | G0, G2–G4 inline by the lead, G8 |
+| Gates (`gates.md`) | G0–G8, G10 | G0–G8, G10 | G0, G1–G4 by script, G5 if < 30 comments, G7 n/a, G8, G10 inline | G0, G1–G4 by script, G8, G10 inline |
 | Per-lane cap | 8 non-blocking, titles of the rest in `OTHER` | 5 non-blocking, Pareto | n/a | n/a |
 | Report | full (`output/report.md` §Report) | Pareto set + one "Other items" line | short form (`effort/low.md` §Low report) | short form (`effort/skim.md` §Skim report) |
 | APPROVE event | allowed | allowed | never; the event is always `COMMENT` | allowed with confirmation, only when the PR is in profile, CI is `passing` and `!author_is_me` |

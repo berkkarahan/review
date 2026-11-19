@@ -3,7 +3,7 @@
 
 Usage: precision.py [path]   (default ~/.claude/review/feedback.jsonl)
 A finding is "kept" when decision == "posted". "chat-only" counts as half, because
-the user saw it as useful but not worth posting. "dropped-by-user" is 0.
+the user saw it as useful but not worth posting. "dropped-by-user" and "dropped-by-eval" are 0.
 Prints groups with at least 10 findings first. Stdlib only.
 """
 import collections
@@ -19,7 +19,7 @@ elif not os.path.exists(default_path) and os.path.exists(legacy_path):
     path = legacy_path
 else:
     path = default_path
-WEIGHT = {"posted": 1.0, "chat-only": 0.5, "dropped-by-user": 0.0}
+WEIGHT = {"posted": 1.0, "chat-only": 0.5, "dropped-by-user": 0.0, "dropped-by-eval": 0.0}
 groups = collections.defaultdict(lambda: [0, 0.0])
 try:
     lines = open(path, encoding="utf-8").read().splitlines()

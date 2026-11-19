@@ -32,8 +32,21 @@ A LOW comment.
 - After:
   > NIT: The API rejects `allow_rename=true` when `allow_edit=false` (400, `api/validators.py:51-55`). Add this rule to this note and to docs/api.md:47.
 
-A QUESTION.
+A QUESTION (author question with ID citation).
+- Before:
+  > Should we change AC-4 before merge, or wait for OQ-2?
+- After:
+  > **Q1** (`documents/models.py:142`) — AC-4 requires released drafts to show updated names, and OQ-2 tracks whether renames trigger a new draft. Should we change AC-4 before merge, or wait for OQ-2?
+
+A human-in-the-loop prompt (`AskUserQuestion` / follow-up choice).
+- Before:
+  > Should we post X1 and drop Y2? Options: "Show fix for C1", "Drop H2", "Decline B1".
+- After:
+  > X1 reports an unchecked null dereference in `auth/session.py:44`, and Y2 flags a duplicate cache lookup in `orders/repo.py:19`. Should we post X1 and drop Y2?
+  > Options: "Show fix for C1 — adds a null guard in `auth/session.py:44`", "Drop H2 — ignores the timeout fallback in `jobs/sync.py:88`", "Decline B1 — keeps the current rate limit for `POST /login`".
+
+Another QUESTION (issue reference).
 - Before:
   > Issue #120 and web#3415 still promise shared drafts and "reuses the editor"; updated before merge, or in a later pass?
 - After:
-  > Issue #120 and web#3415 still say that users can share drafts. They also still say "reuses the editor". Will you update these issues before merge, or later?
+  > **Q2** (`PR description`) — Issue #120 and web#3415 still say that users can share drafts and reuse the editor. Will you update these issues before merge, or later?

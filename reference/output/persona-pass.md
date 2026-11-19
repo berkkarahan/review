@@ -2,7 +2,7 @@
 
 ## Persona pass (Phase 3)
 
-Input: merged, verified findings, plus `reference/persona.md`. If `persona.md` is missing or has `status: empty` and no learned preferences in §9, use the default neutral voice: write in STE (`output/ste.md` §Simplified Technical English), concise and direct, with no filler.
+Input: evaluated findings (`eval_disposition: post` and `eval_disposition: chat-only`), plus `reference/persona.md`. Keep `chat-only` items strictly under `Not posted (chat only):` in the chat report and never promote them to posted PR comments. If `persona.md` is missing or has `status: empty` and no learned preferences in §9, use the default neutral voice: write in STE (`output/ste.md` §Simplified Technical English), concise and direct, with no filler.
 
 1. **Re-rank** within each severity by the persona's `emphasis` list, §1 ("What they consistently flag"), §6 ("Business and domain priorities"), and §9 ("Learned preferences" with type `emphasis` or `check`).
 2. **Lets slide and learned suppressions.** LOW and non-blocking findings that match §2 ("What they let slide") or a `suppress` entry in §9 ("Learned preferences") fold into one line: `Minor items that do not block merge: <a>, <b>, <c>.` Drop them entirely if the persona or learned preference says the owner never raises that kind of item. Never drop or fold a verified CRITICAL or HIGH finding.
@@ -33,9 +33,9 @@ Input: merged, verified findings, plus `reference/persona.md`. If `persona.md` i
 8. **Self-authored PR.** If `author_is_me`, write the comments as notes to self ("Fix this before you request a review."). Keep the same content.
 9. **Posted volume cap (Gate G7).** Post **at most `voice.max_inline` inline comments** (default 8), at most 8 MEDIUM findings in the whole review, and at most 3 LOW findings from house rules. Set it from the persona's observed comments per PR, not from how many findings there are:
    - Rank by severity, then by the persona's `emphasis`, §1 order, and §8/§9 rules.
-   - Put everything else in the review body as one compact bullet list ("Also:"), or leave it chat-only.
-   - Verified CRITICAL and HIGH findings always get an inline comment, or a body bullet if their line isn't in the diff, even past the cap.
-   - The chat report still lists everything.
+   - Move excess non-blocking items strictly to `Not posted (chat only):` in chat. Never dump excess items into an `"Also:"` grab-bag in the posted PR body.
+   - Verified CRITICAL and HIGH findings always get an inline comment, or a body bullet if their line isn't in the diff (adherence intent findings only), even past the cap.
+   - The chat report still lists `post` and `chat-only` findings.
 10. **STE self-check.** Run Gate G8 and the checklist in `output/ste.md` §Simplified Technical English on the whole report before you print it.
 
 ## Interactive persona and preference configuration (via `/review`)

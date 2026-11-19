@@ -1,6 +1,6 @@
 # Lane checklist: performance
 
-Read and apply this checklist to the changed code and the code it reaches. Report only what the diff adds or changes. Map each item to a `dimension` value.
+Read and apply this checklist strictly to the lines added, modified, or removed in `diff.patch` (inspect surrounding code solely as read-only context to verify impact). Report only performance issues introduced or worsened by this PR. Map each item to a `dimension` value.
 
 **Codebase and framework awareness:** Inspect how the existing codebase and its framework handle data access, batching, pagination, caching, and background jobs. Follow any framework or architecture convention files that the codebase leads to before flagging a pattern.
 

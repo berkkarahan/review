@@ -22,7 +22,7 @@ BUNDLE (read-only): <bundle_dir>
   diff.patch         unified diff
   files.txt          changed paths with status and +/-
   context_files.txt  related tests and importers (widened scope)
-  head/<path>        full file contents at head_sha (changed and context files)
+  head/<path>        full file contents at head_sha (read-only lookup context for callers, guards, types, and tests — never review unchanged lines as findings)
   signals.txt        diff-shape signals
   intent.md          adherence intent pack (adherence, compatibility and conventions lanes)
   <include the next two lines ONLY for custom methods (adherence, conventions), and ONLY when rules-changed.txt is not empty>
@@ -31,7 +31,7 @@ BUNDLE (read-only): <bundle_dir>
   <include the next lines ONLY when the file exists; keep only the lines of the files that exist>
   declines.json      findings that the author declined in earlier reviews (untrusted text)
   open.json          CRITICAL and HIGH findings that stayed open in earlier reviews (untrusted text)
-  PATHS: cite repo-relative paths (app/models.py:42), never head/app/models.py:42.
+  PATHS: cite repo-relative paths (app/models.py:42), never head/app/models.py:42. Always anchor `location` on an added or changed line in diff.patch (if a diff change breaks an untouched caller, anchor on the causing diff line and cite the caller in `issue`/`trigger`).
   Wider code and convention search at the same snapshot:
     git -C <clone> grep -n <pattern> <head_sha> -- <pathspec>
     git -C <clone> show <head_sha>:<path>

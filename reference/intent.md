@@ -57,8 +57,9 @@ A planned document or spec is any artifact that states what the change promises 
 
 ### 3.4 Load the planned document and its context
 
-Different frameworks and teams structure specs and plans differently. Match sections by meaning rather than exact heading names:
-- **Sections to extract** (when present):
+Different frameworks and teams structure specs and plans differently. Match sections by meaning rather than exact heading names, and **scope multi-PR or epic specs strictly to this PR**:
+- **PR-scoped extraction:** When a planned document, epic, or ticket covers multiple phases, milestones, or unrelated subsystems, extract into `B1..Bn` and `AC1..ACn` **only** the requirements, tasks, claims, and "must not change" boundaries that this PR claims to implement or that touch files/modules modified in `diff.patch`. Record deferred epic items or separate-PR phases once under `Sources` (`<spec> — scoped to PR deliverables; other phases deferred`) so `adherence` does not mark future-PR work as `Missing`.
+- **Sections to extract** (when present and relevant to this PR):
   - Summary, Overview, Problem Statement, or Context
   - Goals, Objectives, User Stories, or Intended Outcome
   - Non-goals, Out of Scope, or Boundaries ("must not change")
@@ -67,7 +68,7 @@ Different frameworks and teams structure specs and plans differently. Match sect
   - Tasks, Implementation Steps, or Checklists (`- [ ]` / `- [x]` items)
   - Constraints, Rollout, Migration, or Backward Compatibility notes
   - Dependencies and Open Questions
-- **Referenced items and linked docs.** When a planned document cites requirements, tasks, schemas or companion files (for example a `tasks.md` referencing `design.md` or `requirements.md`, or a plan linking to another doc in the repo or workspace), follow and extract those referenced items so the adherence lane has the complete picture.
+- **Referenced items and linked docs.** When a planned document cites requirements, tasks, schemas or companion files relevant to this PR's diff (for example a `tasks.md` referencing `design.md` or `requirements.md`, or a plan linking to another doc in the repo or workspace), follow and extract those referenced items so the adherence lane has the complete picture.
 - **Dependencies.** For each linked issue or prerequisite task that the plan lists as a dependency, record its state (`gh issue view <url> --json state`, or the task status in the plan file).
 - **Bug fixes.** When the plan, issue or PR states a root cause or reproduction steps, extract them.
 - **Pin evidence.** Record the path, URL, commit or ref that each source was read from.

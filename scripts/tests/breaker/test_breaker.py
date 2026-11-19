@@ -223,6 +223,18 @@ add("valid: challenges a declined id", "high",
     [F("MEDIUM", id="Z9", status="declined", reason="r"), F("HIGH", challenges="Z9")], valid=True)
 add("invalid: cleared without evidence", "high", [], lanes=[{"lane": "security", "cleared": [{"id": "B1"}]}],
     valid=False)
+add("eval: evaluation lane returned -> valid", "high", [F("MEDIUM", eval_disposition="post")],
+    lanes=L(*FULL, "evaluation"), valid=True, verdict=AWC)
+add("eval: evaluation lane abstained -> complete", "high", [],
+    lanes=L(*FULL, evaluation="abstained"), valid=True, complete=True, verdict=AP)
+add("eval: evaluation lane NOT ASSESSED -> incomplete", "high", [],
+    lanes=L(*FULL, evaluation="NOT ASSESSED"), valid=True, complete=False, verdict=AWC)
+add("eval: chat-only and drop excluded from open counts", "high",
+    [F("MEDIUM", eval_disposition="chat-only"), F("LOW", eval_disposition="drop")],
+    lanes=L(*FULL, "evaluation"), valid=True, verdict=AP, event="APPROVE",
+    open={"critical": 0, "high": 0, "medium": 0, "low": 0, "question": 0})
+add("eval: invalid eval_disposition rejected", "high", [F("MEDIUM", eval_disposition="maybe")], valid=False)
+add("eval: eval_downgraded without eval_reason rejected", "high", [F("MEDIUM", eval_downgraded=True)], valid=False)
 
 
 def run_case(name, effort, data, opts, expect):
@@ -269,6 +281,52 @@ def pre_prev_cases():
                                          introduced_by_pr="pre-existing")], "lanes": base_lanes}, {},
                         pre=[F("HIGH", id="q", title="Other", location="zz.py:1")])
     chk("floor: moved to pre-existing is kept, not dropped", o["valid"], str(o["invalid"]))
+    # evaluation lane safety floor vs non-floor downgrade
+    cq_pre = [F("HIGH", id="cq-1", lane="code-quality", title="Verbose helper", location="c.py:10")]
+    cq_down_ok = [F("MEDIUM", id="D1", lane="code-quality", title="Verbose helper", location="c.py:10",
+                    eval_disposition="post", eval_downgraded=True,
+                    eval_reason="Readability issue does not crash on main path.")]
+    o = breaker.compute({"findings": cq_down_ok, "lanes": base_lanes + [{"lane": "evaluation"}]}, {}, pre=cq_pre)
+    chk("eval floor: non-floor HIGH downgraded with eval_reason is valid", o["valid"], str(o["invalid"]))
+
+    crit_pre = [F("CRITICAL", id="sec-c", lane="security", title="SQL injection", location="d.py:4")]
+    crit_down = [F("MEDIUM", id="S1", lane="security", title="SQL injection", location="d.py:4",
+                   eval_disposition="post", eval_downgraded=True, eval_reason="try lower")]
+    o = breaker.compute({"findings": crit_down, "lanes": base_lanes + [{"lane": "evaluation"}]}, {}, pre=crit_pre)
+    chk("eval floor: confirmed CRITICAL cannot be downgraded", not o["valid"] and "lowered" in " ".join(o["invalid"]), str(o["invalid"]))
+
+    sec_pre = [F("HIGH", id="sec-h", lane="security", title="Missing auth", location="d.py:8")]
+    sec_down = [F("MEDIUM", id="S2", lane="security", title="Missing auth", location="d.py:8",
+                  eval_disposition="post", eval_downgraded=True, eval_reason="try lower")]
+    o = breaker.compute({"findings": sec_down, "lanes": base_lanes + [{"lane": "evaluation"}]}, {}, pre=sec_pre)
+    chk("eval floor: confirmed security HIGH cannot be downgraded", not o["valid"] and "lowered" in " ".join(o["invalid"]), str(o["invalid"]))
+
+    ac_pre = [F("HIGH", id="b-h", lane="adherence", title="Missing requirement", location="e.py:3", ac_ref="AC1")]
+    ac_down = [F("MEDIUM", id="B1", lane="adherence", title="Missing requirement", location="e.py:3",
+                 eval_disposition="post", eval_downgraded=True, eval_reason="try lower")]
+    o = breaker.compute({"findings": ac_down, "lanes": base_lanes + [{"lane": "evaluation"}]}, {}, pre=ac_pre)
+    chk("eval floor: confirmed ac_ref HIGH cannot be downgraded", not o["valid"] and "lowered" in " ".join(o["invalid"]), str(o["invalid"]))
+
+    brk_pre = [F("HIGH", id="a-h", lane="compatibility", title="Removed field", location="f.py:2",
+                 breaking={"consumers": "mobile", "migration": "none"})]
+    brk_down = [F("MEDIUM", id="A1", lane="compatibility", title="Removed field", location="f.py:2",
+                  eval_disposition="post", eval_downgraded=True, eval_reason="try lower")]
+    o = breaker.compute({"findings": brk_down, "lanes": base_lanes + [{"lane": "evaluation"}]}, {}, pre=brk_pre)
+    chk("eval floor: confirmed unmigrated breaking HIGH cannot be downgraded",
+        not o["valid"] and "lowered" in " ".join(o["invalid"]), str(o["invalid"]))
+
+    for disp in ("drop", "chat-only"):
+        cq_hidden = [F("HIGH", id="D2", lane="code-quality", title="Verbose helper", location="c.py:10",
+                       eval_disposition=disp, eval_reason="hide")]
+        o = breaker.compute({"findings": cq_hidden, "lanes": base_lanes + [{"lane": "evaluation"}]}, {}, pre=cq_pre)
+        chk(f"eval floor: confirmed HIGH cannot be {disp}",
+            not o["valid"] and "missing" in " ".join(o["invalid"]), str(o["invalid"]))
+
+        crit_hidden = [F("CRITICAL", id="S9", lane="security", title="SQL injection", location="d.py:4",
+                         eval_disposition=disp, eval_reason="hide")]
+        o = breaker.compute({"findings": crit_hidden, "lanes": base_lanes + [{"lane": "evaluation"}]}, {}, pre=crit_pre)
+        chk(f"eval floor: confirmed CRITICAL cannot be {disp}",
+            not o["valid"] and "missing" in " ".join(o["invalid"]), str(o["invalid"]))
     # previous carry
     prev = [F("HIGH", id="S2", status="todo", origin="new"),
             F("CRITICAL", id="B1", status="todo", origin="new"),

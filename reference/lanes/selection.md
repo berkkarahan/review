@@ -1,6 +1,6 @@
 # Lanes
 
-A lane is one subagent with one FOCUS. Lanes find issues and return findings in `schema/finding.md` form. They never style comments, post to GitHub, read a dirty working tree when reviewing a commit snapshot, or spawn subagents.
+A lane is one subagent with one FOCUS. Phase 1 lanes are **candidate generators** and are never taken for granted: returning `FINDINGS: []` or `STATUS: abstained` is expected when nothing concrete is wrong in the diff, and all surviving candidates go through the Phase 2.3a `evaluation` lane (`lanes/evaluation.md`) before reaching the PR or verdict. Lanes never style comments, post to GitHub, read a dirty working tree when reviewing a commit snapshot, or spawn subagents.
 
 ## Selection
 
@@ -8,13 +8,14 @@ Signals come from `<bundle_dir>/signals.txt` (see `bundle.md` §2).
 
 | Lane | Runs when | Method |
 |---|---|---|
-| `adherence` | Always. One lane per planned doc/spec, max 3; group extra specs into those 3 | custom: `lanes/adherence.md` |
-| `code-quality` | Always, unless `--no-inherit` | checklist: `lanes/checklist-code-quality.md` |
+| `adherence` | Always. One lane per planned doc/spec relevant to this PR, max 3; group extra specs into those 3 | custom: `lanes/adherence.md` |
+| `code-quality` | Executable source or test files are added or modified in `files.txt`, unless `--no-inherit` (skip on docs-only, lockfile/manifest-only, static-asset, or rule-file-only diffs unless `--lanes` selects it) | checklist: `lanes/checklist-code-quality.md` |
 | `security` | `auth`, `input` or `deps` (or when `security` is in `persona.md` `emphasis`) | checklist: `lanes/checklist-security.md` |
 | `performance` | `perf` or `data` (or when `performance` is in `persona.md` `emphasis`) | checklist: `lanes/checklist-performance.md` (static review only; run nothing) |
 | `compatibility` | `contract` or `data` (or when `compatibility` / `backward-compatibility` is in `persona.md` `emphasis`) | checklist: `lanes/checklist-compatibility.md`, plus the rollout and migration notes from `intent.md` |
 | `robustness` | `async` (or when `robustness` is in `persona.md` `emphasis`) | checklist: `lanes/checklist-robustness.md` |
-| `conventions` | Always | custom: `lanes/conventions.md` |
+| `conventions` | Executable source files change in `files.txt`, `rules-changed.txt` is non-empty, or `persona.md` §8/§9 has active applicable rules (skip on pure docs/lockfile/asset diffs with no applicable rules unless `--lanes` selects it) | custom: `lanes/conventions.md` |
+| `evaluation` | Phase 2.3a (Gate G10), whenever at least one candidate finding survives Phase 2.3 (inline at `low`/`skim`) | custom: `lanes/evaluation.md` |
 
 **Subagent type.** Every lane runs as a `general-purpose` subagent with its method file named in the prompt. The skill needs no external plugin or framework-specific agent definition. If the session offers a dedicated reviewer subagent type for a lane's focus (for example a security review agent), the lead may use it with the agent-type method, and still includes the checklist. If a named subagent type is not available, use `general-purpose` with the checklist. Never fail a lane because an optional agent type is missing.
 
@@ -36,11 +37,11 @@ Signals come from `<bundle_dir>/signals.txt` (see `bundle.md` §2).
 
 **Cap (`high`): 6 lanes in Phase 1.**
 - When selection exceeds the cap, first group the planned docs/specs into **at most 2** `adherence` lanes. The core or foundation spec gets its own lane; the dependent specs share the other.
-- Then keep lanes in priority order: `adherence` → `code-quality` → `conventions` → `security` → `performance` → `compatibility` → `robustness`. When `persona.md` defines `emphasis`, boost the lanes matching those emphasized concerns ahead of non-emphasized conditional lanes. `conventions` always stays because it carries the repo conventions, house rules and learned preferences.
-- **Folding.** A dropped `compatibility` or `robustness` lane folds into the `conventions` lane, which can read wider. Add to its prompt either:
+- Then keep lanes in priority order: `adherence` → `code-quality` → `conventions` → `security` → `performance` → `compatibility` → `robustness`. When `persona.md` defines `emphasis`, boost the lanes matching those emphasized concerns ahead of non-emphasized conditional lanes. `conventions` stays whenever triggered because it carries the repo conventions, house rules and learned preferences.
+- **Folding.** A dropped `compatibility` or `robustness` lane folds into the `conventions` lane (if running), which can read wider. Add to its prompt either:
   - "also check public-contract changes are additive (response shapes, API schemas, routes, message schemas) and migrations are rollout-safe", or
   - "also check async/transaction/side-effect ordering".
-- Record every dropped or folded lane in the plan's `Skipped` line.
+- Record every skipped, dropped, or folded lane in the plan's `Skipped` line.
 
 **Per-lane output cap (`high`).** Every lane returns all CRITICAL and HIGH findings. It returns at most 8 MEDIUM, LOW and QUESTION findings, ranked by impact × likelihood. It lists the titles of the others in `OTHER`. The lead may ask for them if a cap hides a pattern. `OTHER` is valid at `high` and `medium`.
 
@@ -48,11 +49,11 @@ Signals come from `<bundle_dir>/signals.txt` (see `bundle.md` §2).
 - `--inline` is set, or
 - all of these hold: `additions + deletions < 150`, at most 1 planned doc/spec, and none of the `auth`, `data` or `contract` signals.
 
-In small-PR mode, the lead runs `adherence` inline, and launches `code-quality` plus the single highest-priority other triggered lane (or `conventions` if none triggered).
+In small-PR mode, the lead runs `adherence` inline, and launches up to 2 highest-priority triggered lanes from the remaining selected lanes (`code-quality`, `conventions`, or a signal-triggered lane).
 
 **Overrides.**
 - `--lanes=a,b` selects exactly those lanes. Warn if `adherence` is omitted.
-- `--no-inherit` runs `adherence` and `conventions` only.
+- `--no-inherit` runs `adherence` (and `conventions` if triggered) only.
 
 ## Lead notes for the lane prompt
 

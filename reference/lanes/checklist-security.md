@@ -1,6 +1,6 @@
 # Lane checklist: security
 
-Read and apply this checklist to the changed code and the code it reaches. Report only what the diff adds or changes. Map each item to a `dimension` value.
+Read and apply this checklist strictly to the lines added, modified, or removed in `diff.patch` (inspect callers, guards, and middleware solely as read-only context to verify impact). Report only security flaws introduced or worsened by this PR. Map each item to a `dimension` value.
 
 **Codebase and framework awareness:** Inspect how the existing codebase and its framework enforce authentication, authorization, tenant isolation, validation, and secret handling. Follow any security checklists, middleware definitions, or framework convention files that the codebase points to.
 

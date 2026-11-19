@@ -9,9 +9,9 @@ The goal is to spend review effort where most of the risk is (Pareto: the vital 
 - Build the full intent pack.
 
 ### Lane selection
-- **Cap: 3 lanes.** Keep the `high` priority order: `adherence` → `code-quality` → `conventions` → `security` → `performance` → `compatibility` → `robustness` (with `persona.md` `emphasis` boosting matching conditional lanes).
-- Use one `adherence` lane for all specs/plans.
-- Fold each dropped triggered lane into `conventions` (which can read wider), with one line per concern:
+- **Cap: 3 lanes.** Keep the `high` priority order (`adherence` → `code-quality` → `conventions` → `security` → `performance` → `compatibility` → `robustness`, skipping unconditional `code-quality`/`conventions` when `lanes/selection.md` §Selection does not trigger them, with `persona.md` `emphasis` boosting matching conditional lanes).
+- Use one `adherence` lane for all PR-relevant specs/plans.
+- Fold each dropped triggered lane into `conventions` (if `conventions` is running, which can read wider), with one line per concern:
   - security: "also check authorization on each new or changed endpoint, trust of client input and headers, and data exposure across tenants or actors"
   - performance: "also check query count that grows with data, N+1, missing pagination, and repeated HTTP calls in loops"
   - compatibility: "also check that public-contract changes are additive (serializers, OpenAPI, urls) and that migrations are rollout-safe"
@@ -30,9 +30,10 @@ EFFORT: medium (Pareto).
 
 The lead fills in the signal line, because a lane that reads only bundle files may not open `signals.txt`. At `medium`, `ac-matrix.md` holds only the rows that the `adherence` lane returned, plus the count of Met rows.
 
-### Verification
+### Verification and evaluation
 - At most 2 verifiers, batched by file. Verify only CRITICAL and HIGH findings, and `Missing` or `Contradicted` AC rows.
 - If there are more than 2 batches, merge the smallest batches until 2 remain.
+- After verification (Phase 2.3a, Gate G10), launch 1 `evaluation` subagent (`lanes/evaluation.md`) on the surviving candidates before Carry, `breaker.py`, and the Pareto cut.
 
 ### Pareto cut (Phase 2, after dedupe and verification, after the verdict)
 1. Score each merged finding: `score = severity weight × confidence weight × reach`.

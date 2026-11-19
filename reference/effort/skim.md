@@ -26,7 +26,7 @@ If one of these is false, the PR is over the skim size. Skim still runs. The lea
   gh pr view <url> --json number,title,body,author,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,additions,deletions,changedFiles,commits,labels,statusCheckRollup,url > pr.json
   gh pr diff <url> > diff.patch
   ```
-  Write `files.txt` as in §2 with a clone. With no clone, derive it from the `diff --git` headers and the `+`/`-` line counts of `diff.patch`, because `gh pr view --json files` returns at most 100 files. Do not read `diff.patch` into context, because only Posting step 2 uses it.
+  Write `files.txt` as in §2 with a clone, and run `scripts/diff_map.py diff.patch > diff-map.json` for Gate G2. With no clone, derive `files.txt` from the `diff --git` headers and the `+`/`-` line counts of `diff.patch`, because `gh pr view --json files` returns at most 100 files. Do not read `diff.patch` into context, because only Posting step 2 uses it.
 - **CI.** Compute one CI value from `statusCheckRollup` in `pr.json`:
   - `failing: <check names>` if any entry has conclusion `FAILURE`, `TIMED_OUT`, `CANCELLED` or `ACTION_REQUIRED`, or state `ERROR` or `FAILURE`
   - `pending` if any entry is not complete
@@ -56,12 +56,13 @@ If one of these is false, the PR is over the skim size. Skim still runs. The lea
   ```
   Add the flag lines from `effort/levels.md` §Option precedence when they apply.
 
-### Skim verification (Phase 2)
+### Skim verification and evaluation (Phase 2)
 
-- Validate the result as in Phase 2.1. Retry once. After a second failure, print "Skim failed: <reason>. This review has no verdict." and stop. Do not compute a verdict and do not offer a post.
+- Validate the result as in Phase 2.1, then run `scripts/schema_lint.py` against `diff-map.json` (G1–G4; G2 drops any out-of-diff finding). Retry once on G1 failure. After a second failure, print "Skim failed: <reason>. This review has no verdict." and stop. Do not compute a verdict and do not offer a post.
 - Drop any MEDIUM or LOW finding that the agent returns, and count it in "dropped".
 - Do not add a finding for CI status, and do not report other obvious facts that the author and the reviewer already see (a failed check, a red status, the PR size). CI appears only in the Context line of the chat report, and it still blocks `APPROVE` (§Skim verdict).
 - The lead verifies each CRITICAL and HIGH finding inline, as at `low`: re-read the cited range at `head_sha` and one caller or guard. Drop a finding that the evidence does not support. Downgrade an unclear finding to a question.
+- Apply the Phase 2.3a `evaluation` rubric (`lanes/evaluation.md`) inline to confirm every surviving item belongs on the PR (`post` vs `chat-only` vs `drop`, preserving the safety floor) before running `scripts/breaker.py --effort skim`.
 - There is no quality gate, no AC matrix and no Pareto cut.
 
 ### Skim verdict
@@ -95,10 +96,10 @@ Print this short form instead of `output/report.md` §Report. Write it in STE. O
 <findings, same format as §Report>
 
 ### Questions for the author
-<at most 3>
+1. **Q1** (`path:line`) — <at most 1 STE sentence explaining the item>. <Direct question?>   # at most 3
 
 ---
-Effort: skim · Lanes: skim ✓ · Quality gate: n/a · Findings: <raw> raw → <kept> kept → <dropped> dropped by the lead · Persona: not applied (skim) · Language: ASD-STE100, self-check done
+Effort: skim · Lanes: skim ✓ · Quality gate: n/a · Findings: <raw> raw → <kept> kept · Removed: <g2> out-of-diff, <eval> evaluated-out, <dropped> dropped by the lead · Persona: not applied (skim) · Language: ASD-STE100, G8 clean
 ```
 
 Phase 3 at skim is the STE rewrite and the self-check only.

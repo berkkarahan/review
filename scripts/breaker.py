@@ -57,11 +57,13 @@ AC_STATUS = {"Met", "Partial", "Missing", "Contradicted", "Not verifiable"}
 FINDING_STATUS = {"todo", "fixed", "declined"}
 ORIGINS = {"new", "existing"}
 LANE_NAMES = {"adherence", "business-logic", "code-quality", "security", "performance",
-              "compatibility", "robustness", "conventions", "skim", "critical-risk"}
+              "compatibility", "robustness", "conventions", "skim", "critical-risk", "evaluation"}
 LANE_STATUS = {"returned", "abstained", "NOT ASSESSED", "failed"}
 NOT_ASSESSED = {"NOT ASSESSED", "failed"}
+EVAL_DISPOSITIONS = {"post", "chat-only", "drop"}
 BAND_LANES = ("code-quality", "performance", "security")
 HOLD_EVENTS = ("REQUEST_CHANGES", "COMMENT")
+FLOOR_KEYWORDS = ("data loss", "data corruption", "corrupt", "injection", "auth")
 
 # Open point A1 in the final report: output/verdict.md §Verdict says both "any QUESTION ->
 # APPROVE WITH COMMENTS" (table) and "only QUESTION -> APPROVE" (bullet). The table and the
@@ -99,7 +101,11 @@ def origin_of(f):
 
 
 def excluded(f):
-    return f.get("verified") == "refuted" or f.get("introduced_by_pr") == "pre-existing"
+    return (
+        f.get("verified") == "refuted"
+        or f.get("introduced_by_pr") == "pre-existing"
+        or f.get("eval_disposition") in ("drop", "chat-only")
+    )
 
 
 def tokens(text):
@@ -154,6 +160,12 @@ def validate(findings, ac_rows, lanes, effort, invalid):
             invalid.append(f"{fid}: status fixed needs a commit")
         if f.get("status") == "declined" and not present(f.get("reason")):
             invalid.append(f"{fid}: status declined needs a reason")
+        if f.get("eval_disposition") is not None and f["eval_disposition"] not in EVAL_DISPOSITIONS:
+            invalid.append(f"{fid}: eval_disposition is not one of post, chat-only, drop")
+        if f.get("eval_downgraded") is not None and not isinstance(f["eval_downgraded"], bool):
+            invalid.append(f"{fid}: eval_downgraded must be a boolean")
+        if f.get("eval_downgraded") is True and not present(f.get("eval_reason")):
+            invalid.append(f"{fid}: eval_downgraded needs eval_reason")
         if excluded(f):
             continue
         if sev_of(f) in ("CRITICAL", "HIGH"):
@@ -229,19 +241,40 @@ def same_flaw(pre, post):
     return False
 
 
+def is_floor_protected(pf):
+    """Return True when a confirmed finding is strictly protected from evaluation drops or downgrades."""
+    if pf.get("verified") != "confirmed":
+        return False
+    if sev_of(pf) == "CRITICAL":
+        return True
+    if sev_of(pf) != "HIGH":
+        return False
+    if pf.get("lane") == "security" or breaking_without_migration(pf) or present(pf.get("ac_ref")):
+        return True
+    text = (str(pf.get("dimension") or "") + " " + str(pf.get("impact") or "")).lower()
+    return any(kw in text for kw in FLOOR_KEYWORDS)
+
+
 def check_floor(pre_findings, findings, invalid):
-    """Safety floor: a verified CRITICAL or HIGH of the pre-merge set stays, at the same level or higher."""
+    """Safety floor: a verified CRITICAL or HIGH of the pre-merge set stays, at the same level or higher.
+    Non-floor HIGH findings may be downgraded only by evaluation with eval_downgraded=True and eval_reason."""
     for pf in pre_findings:
         if not isinstance(pf, dict) or pf.get("verified") != "confirmed":
             continue
         if sev_of(pf) not in ("CRITICAL", "HIGH"):
             continue
         matches = [f for f in findings if isinstance(f, dict) and same_flaw(pf, f)]
+        active = [m for m in matches if m.get("eval_disposition") not in ("drop", "chat-only")]
         label = f"{pf.get('id') or '?'} '{pf.get('title') or ''}'"
-        if not matches:
+        if not matches or not active:
             invalid.append(f"safety floor: verified {sev_of(pf)} {label} is missing from the merged set")
-        elif max(RANK.get(sev_of(m), -1) for m in matches) < RANK[sev_of(pf)]:
-            invalid.append(f"safety floor: verified {sev_of(pf)} {label} was lowered in the merged set")
+        elif max(RANK.get(sev_of(m), -1) for m in active) < RANK[sev_of(pf)]:
+            eval_ok = (
+                not is_floor_protected(pf)
+                and any(m.get("eval_downgraded") is True and present(m.get("eval_reason")) for m in active)
+            )
+            if not eval_ok:
+                invalid.append(f"safety floor: verified {sev_of(pf)} {label} was lowered in the merged set")
 
 
 def check_previous(prev_findings, findings, lanes, invalid, notes):

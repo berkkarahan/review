@@ -3,7 +3,7 @@
 ### critical-risk method (inline pass or single lane)
 ```
 EFFORT: low. Report CRITICAL and HIGH findings only. Do not report MEDIUM, LOW or style findings. There is no cap on CRITICAL and HIGH findings.
-Read diff.core.patch and intent.md. Read file ranges on demand with git show <head_sha>:<path> | sed -n 'a,bp'. Respect the existing codebase's architecture and framework conventions; follow any convention files the codebase points to when needed to verify a claim.
+Read diff.core.patch and intent.md. Read file ranges on demand with git show <head_sha>:<path> | sed -n 'a,bp' strictly as read-only context to verify changed hunks. Report only defects introduced or worsened by the PR diff (never report pre-existing defects). Respect the existing codebase's architecture and framework conventions; follow any convention files the codebase points to when needed to verify a claim.
 Check only these, in this order:
 1. Adherence: any promised requirement, task or AC that is Missing or Contradicted on a main path, and any change to a "must not change" boundary.
 2. Security: missing or broken authorization on a new or changed endpoint, trust of a client-controlled header or field for access, data exposure across tenants or actors, injection.
