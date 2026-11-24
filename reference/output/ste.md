@@ -5,8 +5,8 @@
 Every text that a person reads is written in ASD-STE100 Simplified Technical English (STE), Issue 9 (January 2025): https://www.asd-ste100.org/. The full standard is a free PDF, available on request from that site.
 
 **Scope.** STE applies to:
-- the Phase 0.6 review plan
-- the Phase 4 chat report: headings, verdict line, Context, Gaps, AC-matrix notes, finding text, **Fix:** and **Ask:** lines, and the footer
+- the Phase 0 review plan
+- the Phase 4 chat report: headings, verdict line, Context, Scope, Gaps, AC-matrix notes, finding text, **Fix:** and **Ask:** lines, and the footer
 - the posted review body and every inline comment
 - questions to the author, and the AskUserQuestion text that the user sees
 
@@ -16,9 +16,9 @@ STE does not apply to lane prompts, verifier prompts, `intent.md` or other inter
 
 **Verbatim items.** Do not rewrite these, and count each one as one word:
 - code spans, file paths, `path:line`, identifiers, commands and URLs
-- FR, NFR, AC, B, P, OQ and AD IDs, ticket keys, PR and issue references, and SHAs
+- FR, NFR, AC, B, D, S, P, A, R, V, K, X, Y, T, OQ, AD, PD, C, H, M, L and Q IDs, ticket keys, PR and issue references, and SHAs
 - quoted spec, ticket, requirement or code-comment text (keep it inside quotation marks)
-- the `voice.comment_prefix` and `voice.nit_prefix` values (for example `[HIGH / HIGH]` and `NIT:`), `suggestion` blocks and fenced code
+- the `voice.comment_prefix` and `voice.nit_prefix` values (for example `[HIGH / HIGH]`, `[HIGH]`, `Nit:`, and `NIT:`), `suggestion` blocks and fenced code
 - the enum values `Met`, `Partial`, `Missing`, `Contradicted` and `Not verifiable`, the verdict names, the GitHub event names and the lane names
 - @-mentions and mention placeholders
 - technical nouns and technical verbs of the subject field (for example `publish`, `serializer`, `codegen`, `impersonation`, `pending`). STE permits them.
@@ -28,7 +28,7 @@ STE does not apply to lane prompts, verifier prompts, `intent.md` or other inter
    - use *start*, not *begin*, *commence* or *initiate*
    - use *do*, not *achieve*, *carry out* or *accomplish*
    - *about* means only "concerned with", not "approximately"
-   - *check* is a noun only ("do a check"), not a verb
+   - *check* is a noun only ("do a check"), not a verb (note: `ste_lint.py` allows `check` in instruction lists for compatibility)
 
    If you are not sure that a general word is approved, use the simplest common word that has one clear meaning.
 2. Do not use "-ing" forms. Exceptions: technical nouns (for example `pending`, `string`), and dictionary words that are not verbs (*during*, *something*, *opening*, *remaining*). This rule also applies to headings.
@@ -51,7 +51,7 @@ STE does not apply to lane prompts, verifier prompts, `intent.md` or other inter
 - Do not use chat abbreviations (for example "wdyt", "IMO", "FYI").
 - Do not use hedges ("I think", "Maybe", "How about", "I am not sure but"). The `[SEVERITY / CONFIDENCE]` prefix shows the confidence. If necessary, add one sentence: "This is not verified."
 - Give each finding this shape: the problem (1–2 descriptive sentences), the evidence (`path:line`), the impact (1 sentence), and the fix (1–3 commands). For more than 3 commands, use a vertical list.
-- **Question & ID Refresher Rule:** Whenever a question is asked to the human-in-the-loop (`AskUserQuestion` prompts, option labels, per-finding post/drop/fix/decline/memory prompts) or to the PR author (`QUESTION` findings / `Questions for the author`), never reference a bare item ID (`C1`, `H2`, `Q1`, `B1`, `S2`, `X1`, `Y2`, `AC3`, `P1`, etc.) alone. Always include **at most 1 short STE sentence** (≤ 25 words) explaining what that item is as a quick refresher before or alongside the question (`**Q1** (\`path:line\`) — <1-sentence max refresher>. <Direct question?>`).
+- **Question & ID Refresher Rule:** For every author question (`QUESTION` findings / `Questions for the author` / `Open questions`), include **1 short STE sentence** (≤ 25 words) explaining what the item is before the direct question (`**Q1** (\`path:line\`) — <1-sentence refresher>. <Direct question?>`). Whenever asking the human-in-the-loop (`AskUserQuestion` prompts, option labels, per-finding post/drop/fix/decline/memory prompts) about an item ID (`C1`, `H2`, `Q1`, `B1`, `S2`, `X1`, `Y2`, `AC3`, `P1`, etc.), never cite a bare ID alone: include **1 short STE sentence** (≤ 25 words) explaining that item before or alongside the question or option.
 
 **Fixed headings and phrases** (these replace the persona labels in `output/report.md` §Report):
 
@@ -59,11 +59,14 @@ STE does not apply to lane prompts, verifier prompts, `intent.md` or other inter
 |---|---|
 | Verdict REQUEST CHANGES / APPROVE WITH COMMENTS / APPROVE | "Not ready to merge" / "Ready to merge after the comments" / "Ready to merge" |
 | Verdict when `author_is_me` | "Not ready for review" / "Ready for review" |
+| Verdict at `effort=low` (other HIGH / none) | "Fix the HIGH items before merge" / "No CRITICAL or HIGH issues found. This review did not examine MEDIUM or LOW issues." |
 | Verdict at `level=CODEBASE` (`NEEDS ACTION` / `IMPROVEMENTS RECOMMENDED` / `HEALTHY`) | "Codebase needs urgent fixes" / "Codebase needs targeted improvements" / "Codebase is in good shape" |
+| Adherence section (`PR` / `CODEBASE`) | "Adherence" / "Spec and documentation drift" |
 | CRITICAL and HIGH section | "Must fix (CRITICAL, HIGH)" |
 | MEDIUM section (`PR` / `CODEBASE`) | "Fix before merge or soon after (MEDIUM)" / "Recommended improvements (MEDIUM)" |
 | LOW section (`PR` / `CODEBASE`) | "Does not block merge (LOW)" / "Low-priority improvements (LOW)" |
 | Folded LOW line (`PR` / `CODEBASE`) | "Minor items that do not block merge: <a>, <b>, <c>." / "Minor improvements: <a>, <b>, <c>." |
+| Medium Pareto remainder | "Other items that this review did not examine in depth: <a>, <b>, <c>." |
 | Chat-only list (`PR` / `CODEBASE`) | "Not posted (chat only):" / "Additional notes (chat only):" |
 | Questions section (`PR` / `CODEBASE`) | "Questions for the author" / "Open questions" |
 | Breaking changes (`PR` / `CODEBASE`) | "⚠️ Changes that break consumers" / "⚠️ Contract and compatibility risks" |
@@ -71,12 +74,16 @@ STE does not apply to lane prompts, verifier prompts, `intent.md` or other inter
 | PR claims | "**PR claims that the evidence does not support:**" |
 | STE acknowledgement (last line of the posted review body, one time only) | "This review uses ASD-STE100 Simplified Technical English (STE): https://www.asd-ste100.org/" |
 
-**STE self-check.** Do this check before you print the report, and again before you write `review-payload.json`. First run Gate G8: `python3 scripts/ste_lint.py <file> --findings <bundle_dir>/findings.json` on the report, on the review body and on each inline comment. Pass the `post` findings that the text reports, not the dropped, `chat-only`, or out-of-diff ones. Fix every line that the script prints. The script finds length, "-ing", semicolon, hedge, missing question-refresher, and lost-evidence problems. It cannot judge the rest, so then do the checklist below by hand. No tool replaces the standard (STE website FAQ). For each sentence, ignore the verbatim items, then confirm these points:
+**STE self-check.** Do this check before you print the report, and again before you write `review-payload.json`. First run Gate G8:
+- On the report: `python3 scripts/ste_lint.py <bundle_dir>/report.md --findings <bundle_dir>/reported.json` (use `--findings <bundle_dir>/pareto.json` at `effort=medium`).
+- On the posted review body and on each inline comment: `python3 scripts/ste_lint.py <file>` (omit `--findings`, or pass only the subset of findings rendered in that text).
+
+Fix every line that the script prints. The script finds length, "-ing", semicolon, hedge, missing question-refresher, and lost-evidence problems. It cannot judge the rest, so then do the checklist below by hand. No tool replaces the standard (STE website FAQ). For each sentence, ignore the verbatim items, then confirm these points:
 - [ ] Each instruction is a command, with a maximum of 20 words.
 - [ ] Each descriptive sentence is in the active voice, with a maximum of 25 words.
 - [ ] Each sentence has one topic. No paragraph has more than 6 sentences.
 - [ ] There are no "-ing" verb forms, and no noun cluster has more than 3 words.
 - [ ] No article is omitted. There are no semicolons and no chat abbreviations.
 - [ ] Each condition comes before its result.
-- [ ] Every author question and every human-in-the-loop prompt that cites an item ID includes at most 1 short STE sentence explaining that item.
+- [ ] Every author question and every ID-citing human-in-the-loop prompt includes 1 short STE sentence explaining that item.
 - [ ] Each `path:line`, identifier, number and fix action from the verified finding is still in the text. STE changes the words, not the evidence.

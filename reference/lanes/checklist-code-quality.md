@@ -1,6 +1,6 @@
 # Lane checklist: code-quality
 
-Read and apply this checklist strictly to the lines added, modified, or removed in `diff.patch` (inspect surrounding files and callers solely as read-only context to verify impact). Report only defects introduced or worsened by this PR. Map each item to a `dimension` value.
+**Scope by `LEVEL`:** At `LEVEL: PR`, read and apply this checklist strictly to lines added, modified, or removed in `lanes/code-quality.patch` (inspect surrounding files and callers solely as read-only context to verify impact; report only defects introduced or worsened by this PR). At `LEVEL: CODEBASE`, read and apply this checklist exhaustively across every file in your assigned `<files_list>` at `head_sha` (pre-existing defects and improvements in scope are valid; set `introduced_by_pr: "codebase"`). Map each item to a `dimension` value.
 
 **Codebase and framework awareness:** Before raising any finding, inspect the existing codebase, surrounding modules, and any convention files or framework documentation that the codebase points to. Respect the project's established architecture, layering, error-handling idioms, and test conventions. Do not flag patterns that follow the existing codebase's conventions unless they cause a concrete defect.
 

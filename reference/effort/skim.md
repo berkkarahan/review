@@ -2,20 +2,21 @@
 
 ## Skim
 
-The goal is a verdict in minutes on a small PR: a version upgrade, or a change of fewer than 100 lines that has no large spec document. One subagent reviews the diff with its own engineering judgement, and the lead verifies and writes.
+The goal is a verdict in minutes on a small PR: a version upgrade, or a change of fewer than 100 lines across at most 4 files that has no spec document or high-risk signal. One subagent reviews the diff with its own engineering judgement, and the lead verifies and writes. (`skim` is disallowed at `level=CODEBASE`.)
 
 **No inherited best practices.** The skim agent uses none of these: the `lanes/checklist-<lane>.md`, repo convention docs, the target repo's rule files (`CLAUDE.md`, `AGENTS.md`, `.cursor/rules/*`), the body of `persona.md` (including §8 house rules and §9 learned preferences), and specs or tickets. It uses the PR text, the diff and general engineering judgement only.
 
-The three rules at the top of this file still hold: the safety floor, STE, and "verdict before cuts".
+The five core rules in `effort/levels.md` still hold: safety floor, STE, gates, verdict before cuts, and breaker.
 
 ### Skim size limit
 
-A PR is in profile for skim when all of these are true:
-- `diff.skim.patch` has fewer than 100 changed lines (adds plus dels). Lockfile and generated-file lines do not count.
-- The diff changes no spec or planned document (`intent.md` §3.3, step 2).
-- The PR title, description and branch name name no spec path, and `--spec` is not set (`intent.md` §3.1).
+A PR is in profile for skim when all of these are true (`build_bundle.py` sets `gate_g0b.in_skim_profile`):
+- `diff.skim.patch` has fewer than 100 changed lines (adds plus dels). Pure lockfiles and generated/locale files do not count; package manifests stay in `diff.skim.patch`.
+- At most 4 files changed in `diff.patch`.
+- The diff changes no spec or planned document (`intent.md` §3.3, step 2), and `--spec` is not set (`intent.md` §3.1).
+- `signals.txt` has none of the `auth`, `data`, or `contract` signals.
 
-If one of these is false, the PR is over the skim size. Skim still runs. The lead adds this line to the plan and to the report: "This PR is over the skim size (<reason>). Run with `--effort=low` for a deeper review." An over-size PR never gets an `APPROVE` event.
+If one of these is false, the PR is over the skim size. Skim still runs. The lead adds this line to the plan and to the report: `"This PR is over the skim size (<reason>). Run with --effort=low for a deeper review."` An over-size PR never gets an `APPROVE` event.
 
 ### Skim context (Phase 0)
 
@@ -26,26 +27,28 @@ If one of these is false, the PR is over the skim size. Skim still runs. The lea
   gh pr view <url> --json number,title,body,author,state,isDraft,baseRefName,baseRefOid,headRefName,headRefOid,additions,deletions,changedFiles,commits,labels,statusCheckRollup,url > pr.json
   gh pr diff <url> > diff.patch
   ```
-  Write `files.txt` as in §2 with a clone, and run `scripts/diff_map.py diff.patch > diff-map.json` for Gate G2. With no clone, derive `files.txt` from the `diff --git` headers and the `+`/`-` line counts of `diff.patch`, because `gh pr view --json files` returns at most 100 files. Do not read `diff.patch` into context, because only Posting step 2 uses it.
+  Write `files.txt` as in §2 with a clone, and run `scripts/diff_map.py diff.patch > diff-map.json` for Gate G2. With no clone, derive `files.txt` from the `diff --git` headers and the `+`/`-` line counts of `diff.patch`, because `gh pr view --json files` returns at most 100 files. Do not read `diff.patch` into the lead's context, because only `diff_map.py` and Posting step 2 use it.
 - **CI.** Compute one CI value from `statusCheckRollup` in `pr.json`:
-  - `failing: <check names>` if any entry has conclusion `FAILURE`, `TIMED_OUT`, `CANCELLED` or `ACTION_REQUIRED`, or state `ERROR` or `FAILURE`
+  - `failing: <check names>` if any entry has conclusion `FAILURE`, `TIMED_OUT`, `CANCELLED`, `ACTION_REQUIRED`, or `STARTUP_FAILURE`, or state `ERROR` or `FAILURE`
   - `pending` if any entry is not complete
   - `none` if the list is empty
   - `passing` in all other cases
-- **Diff without lockfiles.** Build `diff.skim.patch` from the merge base. It keeps tests, because tests are cheap to read in a small PR:
+- **Diff without lockfiles.** Build `diff.skim.patch` from the merge base (keeping tests and package manifests, excluding pure lockfiles and generated/locale files):
   ```
   git -C <clone> diff -U3 <merge_base> <head_sha> -- . \
-    ':(exclude,glob)**/*.lock' ':(exclude,glob)**/package-lock.json' ':(exclude,glob)**/pnpm-lock.yaml' ':(exclude,glob)**/go.sum' \
+    ':(exclude,glob)**/*.lock' ':(exclude,glob)**/package-lock.json' ':(exclude,glob)**/pnpm-lock.yaml' ':(exclude,glob)**/yarn.lock' \
+    ':(exclude,glob)**/poetry.lock' ':(exclude,glob)**/Pipfile.lock' ':(exclude,glob)**/Cargo.lock' ':(exclude,glob)**/Gemfile.lock' \
+    ':(exclude,glob)**/composer.lock' ':(exclude,glob)**/go.sum' ':(exclude,glob)**/uv.lock' ':(exclude,glob)**/bun.lockb' ':(exclude,glob)**/bun.lock' \
     ':(exclude,glob)**/__snapshots__/**' ':(exclude,glob)**/*.snap' ':(exclude,glob)**/locale/**' ':(exclude,glob)**/locales/**' \
     ':(exclude,glob)**/*.po' ':(exclude,glob)**/*.min.js' ':(exclude,glob)**/generated/**'
   ```
-  Build `lock.patch` from the lockfiles only, with 3 lines of context, so that the version line stays next to a changed hash:
+  Build `lock.patch` from pure lockfiles only, with 3 lines of context, so that the version line stays next to a changed hash:
   ```
-  git -C <clone> diff -U3 <merge_base> <head_sha> -- ':(glob)**/*.lock' ':(glob)**/package-lock.json' ':(glob)**/pnpm-lock.yaml' ':(glob)**/go.sum'
+  git -C <clone> diff -U3 <merge_base> <head_sha> -- ':(glob)**/*.lock' ':(glob)**/package-lock.json' ':(glob)**/pnpm-lock.yaml' ':(glob)**/yarn.lock' ':(glob)**/poetry.lock' ':(glob)**/Pipfile.lock' ':(glob)**/Cargo.lock' ':(glob)**/Gemfile.lock' ':(glob)**/composer.lock' ':(glob)**/go.sum' ':(glob)**/uv.lock' ':(glob)**/bun.lockb' ':(glob)**/bun.lock'
   ```
-  With no clone, split `diff.patch` at its `diff --git` headers into the same two files, and record the gap. Count the size from `diff.skim.patch` (`git diff --numstat` with the same pathspec, and sum adds and dels). Use anchored patterns. A loose pattern such as `*lock*` also matches `block` and `clock`.
-- **No `head/` copy, no `context_files.txt`, no `signals.txt`.** The agent reads a line range only when a hunk needs it.
-- **Intent.** Write `intent.md` with only: Sources (`PR description: yes | one-line | empty`), the PR claims (P1..Pn, from the title, the description and the commit headlines), and Gaps. Gaps always says "Specs and tickets not read (skim)". If the PR text has a ticket key or a spec path, list it there as "referenced, not read". Do not call a ticket tracker and do not read a spec document.
+  With no clone, split `diff.patch` at its `diff --git` headers into the same two files, and record the gap. Count the size from `diff.skim.patch`. Use anchored patterns. A loose pattern such as `*lock*` also matches `block` and `clock`.
+- **No `head/` copy, no `context_files.txt`.** (`build_bundle.py` still writes `signals.txt` to check `in_skim_profile`, though the skim agent does not read it.) The agent reads a line range only when a hunk needs it.
+- **Intent.** Write `intent.md` with only: Sources (`PR description: yes | one-line | empty`), the PR claims (P1..Pn, from the title, the description and the commit headlines), and Gaps. Gaps always says `"Specs and tickets not read (skim)"`. If the PR text has a ticket key or a spec path, list it there as `"referenced, not read"`. Do not call a ticket tracker and do not read a spec document.
 - **No question to the user.** Skip the AskUserQuestion exception for a thin description. Proceed, and let the report show the gap.
 - **No tasks.** Do not create per-lane tasks.
 - **Plan.** Show this instead of the four-line plan:
@@ -58,16 +61,15 @@ If one of these is false, the PR is over the skim size. Skim still runs. The lea
 
 ### Skim verification and evaluation (Phase 2)
 
-- Validate the result as in Phase 2.1, then run `scripts/schema_lint.py` against `diff-map.json` (G1–G4; G2 drops any out-of-diff finding). Retry once on G1 failure. After a second failure, print "Skim failed: <reason>. This review has no verdict." and stop. Do not compute a verdict and do not offer a post.
-- Drop any MEDIUM or LOW finding that the agent returns, and count it in "dropped".
+- Save the `skim` agent's JSON result to `<bundle_dir>/raw-lanes.json` and run `python3 <skill_dir>/scripts/merge_findings.py merge <bundle_dir>` (runs Gates G1–G5, drops `MEDIUM`/`LOW` findings including G3-downgraded items, and drops out-of-diff items). Retry `skim` once on `retry_lanes` (G1 failure). After a second failure, print `"Skim failed: <reason>. This review has no verdict."` and stop without computing a verdict or offering to post.
 - Do not add a finding for CI status, and do not report other obvious facts that the author and the reviewer already see (a failed check, a red status, the PR size). CI appears only in the Context line of the chat report, and it still blocks `APPROVE` (§Skim verdict).
-- The lead verifies each CRITICAL and HIGH finding inline, as at `low`: re-read the cited range at `head_sha` and one caller or guard. Drop a finding that the evidence does not support. Downgrade an unclear finding to a question.
-- Apply the Phase 2.3a `evaluation` rubric (`lanes/evaluation.md`) inline to confirm every surviving item belongs on the PR (`post` vs `chat-only` vs `drop`, preserving the safety floor) before running `scripts/breaker.py --effort skim`.
+- Verify each CRITICAL and HIGH finding inline, as at `low`: re-read the cited range at `head_sha` and one caller or guard, writing `<bundle_dir>/verifier-results.json` (`"refuted"` if evidence fails, `"unclear"` to downgrade to a question, `"confirmed"` if verified).
+- Apply the Phase 2.2 `evaluation` rubric (`lanes/evaluation.md`) inline to surviving candidates (confirming every surviving item belongs on the PR via `post` | `chat-only` | `drop` while keeping all safety-floor items at `post`) into `<bundle_dir>/eval-results.json`, then run `python3 <skill_dir>/scripts/merge_findings.py finalize <bundle_dir> [--carry] [--still-open <file>] [--cleared <file>]`. If `finalize` exits 1 (`INVALID`), treat it as a skim failure and stop.
 - There is no quality gate, no AC matrix and no Pareto cut.
 
 ### Skim verdict
 
-Compute the verdict and the default event from the verified findings, before any rewrite. `scripts/breaker.py --effort skim` reproduces this table. Use its output.
+Compute the verdict and the default event from the verified findings, before any rewrite. `scripts/breaker.py --effort skim` (called by `merge_findings.py finalize`) reproduces this table. Use its output.
 
 | Condition, checked in order | Verdict phrase | Default event |
 |---|---|---|
@@ -75,9 +77,9 @@ Compute the verdict and the default event from the verified findings, before any
 | Any QUESTION | 🟡 "Ready to merge after the comments" | `COMMENT` |
 | Nothing | 🟢 "Ready to merge" | `APPROVE` if the PR is in profile, `!author_is_me` and CI is `passing`, else `COMMENT` |
 
-- If `author_is_me`, use "Not ready for review" and "Ready for review" as the phrases, and the event is always `COMMENT`.
+- If `author_is_me`, use `"Not ready for review"` and `"Ready for review"` as the phrases, and the event is always `COMMENT`.
 - An over-size PR gets `COMMENT` in every row. A PR with CI `pending` or `none` never gets `APPROVE`, because CI is the main evidence for a version upgrade.
-- The reason line of a 🟢 or 🟡 verdict ends with: "This review examined only CRITICAL and HIGH issues."
+- The reason line of a 🟢 or 🟡 verdict ends with: `"This review examined only CRITICAL and HIGH issues."`
 - An `APPROVE` payload needs the explicit confirmation in `output/posting.md` §Posting step 5, as at every level.
 
 ### Skim report
@@ -91,15 +93,16 @@ Print this short form instead of `output/report.md` §Report. Write it in STE. O
 **Context:** head `<sha7>` · CI <passing | failing: <names> | pending | none> · size <n> changed lines (+ <m> lockfile lines) · PR description <ok|one-line|empty>
 **Gaps:** <list, or "none">. This is a skim review. It did not read specs or tickets. It examined only CRITICAL and HIGH issues.
 <if over size> **Warning:** This PR is over the skim size (<reason>). Run with `--effort=low` for a deeper review.
+<include **High risk:** / **Review safety:** / **Earlier declines still present:** when non-empty>
 
 ### Must fix (CRITICAL, HIGH)
 <findings, same format as §Report>
 
 ### Questions for the author
-1. **Q1** (`path:line`) — <at most 1 STE sentence explaining the item>. <Direct question?>   # at most 3
+1. **Q1** (`path:line`) — <1 concise STE sentence explaining the item>. <Direct question?>   # at most 3
 
 ---
-Effort: skim · Lanes: skim ✓ · Quality gate: n/a · Findings: <raw> raw → <kept> kept · Removed: <g2> out-of-diff, <eval> evaluated-out, <dropped> dropped by the lead · Persona: not applied (skim) · Language: ASD-STE100, G8 clean
+Effort: skim · Lanes: skim ✓ · Quality gate: n/a · Findings: <raw> raw → <kept> post · Gates removed: <g2> out-of-diff, <g5> already raised, <refuted> refuted, <eval> evaluated-out · Persona: not applied (skim) · Language: ASD-STE100, G8 clean
 ```
 
 Phase 3 at skim is the STE rewrite and the self-check only.
@@ -111,7 +114,3 @@ Phase 3 at skim is the STE rewrite and the self-check only.
 - Put no inline comments in the payload, unless a CRITICAL or HIGH finding needs a line anchor.
 - The last line is the STE acknowledgement (`output/ste.md` §Simplified Technical English).
 - The chat report keeps the full short form (§Skim report). Only the posted body is reduced.
-
-## Footer
-
-At every level, add `Effort: <level>` as the first item of the report footer. At `medium`, also add `Pareto: <shown> of <merged> findings shown`.

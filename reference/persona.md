@@ -4,11 +4,11 @@ refreshed: null        # YYYY-MM-DD of the last update
 memory: ask            # enabled | ask | disabled — gather and save user preferences during reviews
 voice:
   tone: direct         # direct | constructive | mentor | strict | concise | neutral
-  spelling: american   # american | british
+  spelling: american   # american | british (output always uses American English per ASD-STE100)
   max_inline: 8        # posted inline comments at most
   hold_event: REQUEST_CHANGES   # REQUEST_CHANGES | COMMENT (event for a "not ready" verdict)
-  comment_prefix: "[{SEVERITY}]"   # {SEVERITY} and {CONFIDENCE} are filled in
-  nit_prefix: "Nit:"
+  comment_prefix: "[{SEVERITY} / {CONFIDENCE}]"   # {SEVERITY} and {CONFIDENCE} are filled in
+  nit_prefix: "Nit:"   # e.g. "Nit:" or "NIT:"
   emoji: none          # none | sparse
 emphasis: []           # e.g. [security, backward-compatibility, test-coverage, performance]
 ---
@@ -18,7 +18,7 @@ emphasis: []           # e.g. [security, backward-compatibility, test-coverage, 
 This file configures the review persona and stores learned user preferences. With `status: empty` and no rules in §8 or §9, the review uses no persona voice and no custom rules. Users can configure this file interactively via `/review` or edit it directly, setting `status: draft` (shown in the report footer) or `approved`, and updating `refreshed`.
 
 Rules for this file:
-- Write no names, emails, handles, user ids, customer names or account ids.
+- Write no personal names, emails, `@handles`, user ids, customer names, or account ids.
 - Paraphrase. Do not paste real comments verbatim.
 - The persona shapes the emphasis, comment structure, tone of communication, and final write-up (`output/persona-pass.md` §Persona pass) within ASD-STE100 grammar rules (`output/ste.md`). It never drops or lowers a verified CRITICAL or HIGH finding.
 - §8 ("House rules") and §9 ("Learned preferences") are also read by the `conventions` lane to run objective checks and respect user-specific suppressions.
@@ -31,7 +31,7 @@ _(empty)_
 
 ## 2. What they let slide
 
-Topics that the reviewer does not comment on, or folds into one "Also:" line.
+Topics that the reviewer ignores in Phase 1/2.2, or folds into the chat-only minor items line (`Minor items that do not block merge:` at `level=PR`, `Minor improvements:` at `level=CODEBASE`).
 
 _(empty)_
 
@@ -61,7 +61,7 @@ _(empty)_
 
 ## 7. Provenance
 
-How this file was configured or updated: interactively via `/review`, from review feedback (`memory`), or by hand, and when. No names and no repository names that identify an organisation.
+How this file was configured or updated: interactively via `/review`, from review feedback (`memory`), or by hand, and when. No personal names and no repository names that identify an organisation.
 
 _(empty)_
 
@@ -85,7 +85,7 @@ _(no rules)_
 
 ### Applicability and status (read by the conventions lane)
 
-The conventions lane skips a rule when its `applies_when` is false for the PR, when its `status` is `disabled`, or when its `owner_lane` is a lane that ran (`lanes/selection.md` §Lane ownership). Signals are the names in `signals.txt`. `owner_lane` is `none`, `performance`, `compatibility` or `robustness`.
+The conventions lane skips a rule when its `applies_when` is false for the PR or `CODEBASE` scope, when its `status` is `disabled`, or when its `owner_lane` is a lane that ran (`lanes/selection.md` §Lane ownership). Signals are the names in `signals.txt`. `owner_lane` is `none`, `adherence`, `code-quality`, `security`, `performance`, `compatibility`, or `robustness`.
 
 | # | applies_when | owner_lane | status |
 |---|---|---|---|

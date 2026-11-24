@@ -345,6 +345,115 @@ def pre_prev_cases():
     legacy_prev = [F("HIGH", id="H1")]
     o = breaker.compute({"findings": [], "lanes": base_lanes}, {}, previous=legacy_prev)
     chk("previous: legacy file (no status) is skipped with a note", o["valid"] and o["notes"], str(o))
+
+    # Wave 2 regression checks
+    # 1. Carried fixed/declined MEDIUM/LOW at skim & legacy/existing without trigger
+    skim_carried = [
+        F("MEDIUM", id="P1", status="declined", reason="Accepted."),
+        F("LOW", id="D1", status="fixed", commit="abc1234"),
+    ]
+    o = breaker.compute({"findings": skim_carried, "lanes": L("skim")}, {"effort": "skim"})
+    chk("skim: carried fixed/declined MEDIUM/LOW is valid", o["valid"] and o["verdict"] == AP, str(o))
+
+    leg_open = [F("HIGH", id="X1", trigger="", legacy=True), F("HIGH", id="X2", trigger="", origin="existing")]
+    o = breaker.compute({"findings": leg_open, "lanes": base_lanes}, {"effort": "high"})
+    chk("legacy/existing HIGH without trigger is valid", o["valid"], str(o["invalid"]))
+
+    # 2. FLOOR_KEYWORDS & title/issue scanning
+    for kw_field, kw_val in (
+        ("dimension", "secret leak"),
+        ("impact", "Exposes user secrets"),
+        ("title", "Hardcoded credential in config"),
+        ("issue", "Causes silent data-loss on retry"),
+        ("issue", "Causes data-corruption in table"),
+    ):
+        kw_pre = [F("HIGH", id="cq-k", lane="code-quality", **{kw_field: kw_val})]
+        kw_down = [F("MEDIUM", id="D1", lane="code-quality", eval_disposition="post",
+                     eval_downgraded=True, eval_reason="try lower", **{kw_field: kw_val})]
+        o = breaker.compute({"findings": kw_down, "lanes": base_lanes + [{"lane": "evaluation"}]}, {}, pre=kw_pre)
+        chk(f"eval floor: keyword in {kw_field}={kw_val!r} protects HIGH from downgrade",
+            not o["valid"] and "lowered" in " ".join(o["invalid"]), str(o))
+
+    # 3. same_flaw 5-line window, HUNK_LOC, space path, and standing declined_still_present
+    pre_5 = [F("HIGH", id="sec-1", location="my dir/app.py @@ -8,2 +10,3 @@", title="Pre title")]
+    post_5 = [F("HIGH", id="S1", location="my dir/app.py:15", title="Different title")]
+    o = breaker.compute({"findings": post_5, "lanes": base_lanes}, {}, pre=pre_5)
+    chk("floor: 5-line window + HUNK_LOC + space path matches", o["valid"], str(o["invalid"]))
+
+    post_dsp = [F("MEDIUM", id="P1", lane="performance", location="a.py:90", title="Old title",
+                  status="declined", reason="Small table", declined_still_present=True,
+                  merged_titles=["Confirmed repeat"], repeat_locations=["a.py:99"])]
+    pre_dsp = [F("HIGH", id="perf-1", lane="performance", location="a.py:99", title="Confirmed repeat")]
+    o = breaker.compute({"findings": post_dsp, "lanes": base_lanes}, {}, pre=pre_dsp)
+    chk("floor: standing declined_still_present MEDIUM satisfies confirmed HIGH pre",
+        o["valid"] and o["declined_blocking"] == 1 and o["verdict"] == AWC, str(o))
+
+    # 4. check_previous rejects dropped/chat-only/refuted match without cleared
+    for bad_cur in (
+        [F("CRITICAL", id="B1", status="todo", eval_disposition="drop")],
+        [F("CRITICAL", id="B1", status="todo", eval_disposition="chat-only")],
+        [F("CRITICAL", id="B1", status="todo", verified="refuted")],
+    ):
+        o = breaker.compute({"findings": [cur[0]] + bad_cur, "lanes": base_lanes}, {}, previous=prev)
+        chk("previous: excluded match without cleared is invalid", not o["valid"] and "B1" in " ".join(o["invalid"]), str(o))
+
+    # 5. band inspects merged sources
+    o = breaker.compute({"findings": [F("HIGH", lane="adherence", sources=["adherence", "security"])],
+                         "lanes": base_lanes}, {"effort": "high"})
+    chk("band: merged security source in adherence finding gives FAIL", o["band"] == "FAIL", str(o))
+
+    # 6. CODEBASE matrix: medium folded, low, author_is_me, declined_blocking, skim rejected
+    o = breaker.compute({"findings": [F("LOW", introduced_by_pr="codebase")],
+                         "lanes": L("adherence", "code-quality", "conventions"), "folded": ["security"]},
+                        {"level": "CODEBASE", "effort": "medium"})
+    chk("CODEBASE medium folded -> HEALTHY, PASS (partial), NONE",
+        o["valid"] and o["verdict"] == "HEALTHY" and o["band"] == "PASS (partial)" and o["event"] == "NONE", str(o))
+
+    o = breaker.compute({"findings": [F("HIGH", introduced_by_pr="codebase")], "lanes": L("critical-risk")},
+                        {"level": "CODEBASE", "effort": "low"})
+    chk("CODEBASE low HIGH -> NEEDS ACTION, NONE",
+        o["valid"] and o["verdict"] == "NEEDS ACTION" and o["event"] == "NONE", str(o))
+
+    o = breaker.compute({"findings": [F("HIGH", status="declined", reason="wontfix", introduced_by_pr="codebase")],
+                         "lanes": base_lanes}, {"level": "CODEBASE", "effort": "high", "author_is_me": True})
+    chk("CODEBASE author_is_me + declined_blocking -> IMPROVEMENTS RECOMMENDED, NONE",
+        o["valid"] and o["verdict"] == "IMPROVEMENTS RECOMMENDED" and o["event"] == "NONE" and o["declined_blocking"] == 1,
+        str(o))
+
+    o = breaker.compute({"findings": [], "lanes": L("skim")}, {"level": "CODEBASE", "effort": "skim"})
+    chk("CODEBASE + skim -> invalid", not o["valid"], str(o))
+
+    # 7. Malformed container/unhashable inputs return valid=False cleanly without TypeError
+    malformed_cases = [
+        ("findings scalar", {"findings": 123, "lanes": []}),
+        ("ac_matrix scalar", {"findings": [], "ac_matrix": "bad", "lanes": []}),
+        ("lanes scalar", {"findings": [], "lanes": 123}),
+        ("folded scalar", {"findings": [], "lanes": L(*FULL), "folded": "none"}),
+        ("author_is_me str", {"findings": [], "lanes": L(*FULL), "author_is_me": "false"}),
+        ("in_profile str", {"findings": [], "lanes": L("skim"), "in_profile": "false"}),
+        ("ci non-str", {"findings": [], "lanes": L("skim"), "ci": 123}),
+        ("id list", {"findings": [{"id": ["X1"], "severity": "LOW"}], "lanes": []}),
+        ("status list", {"findings": [{"id": "X1", "severity": "LOW", "status": ["todo"]}], "lanes": []}),
+        ("origin dict", {"findings": [{"id": "X1", "severity": "LOW", "origin": {}}], "lanes": []}),
+        ("eval_disposition list", {"findings": [{"id": "X1", "severity": "LOW", "eval_disposition": ["post"]}], "lanes": []}),
+        ("challenges list", {"findings": [{"id": "X1", "severity": "LOW", "challenges": ["S1"]}], "lanes": []}),
+        ("locations int", {"findings": [{"id": "X1", "severity": "LOW", "locations": 123}], "lanes": []}),
+        ("merged_titles int", {"findings": [{"id": "X1", "severity": "LOW", "merged_titles": 123}], "lanes": []}),
+        ("ac status list", {"findings": [], "ac_matrix": [{"ref": "AC1", "status": ["Met"]}], "lanes": []}),
+        ("lane name list", {"findings": [], "lanes": [{"lane": ["security"]}]}),
+    ]
+    for mname, mdata in malformed_cases:
+        try:
+            mo = breaker.compute(mdata, {"effort": "skim" if "skim" in mname else "high"})
+            chk(f"malformed: {mname} -> valid=False", not mo["valid"], str(mo))
+        except Exception as exc:
+            chk(f"malformed: {mname} -> valid=False", False, f"crashed with {type(exc).__name__}: {exc}")
+
+    try:
+        mo = breaker.compute({"findings": [], "lanes": L(*FULL)}, {"effort": "high"}, pre=123, previous=123)
+        chk("malformed: pre/previous scalar -> valid=False", not mo["valid"] and len(mo["invalid"]) >= 2, str(mo))
+    except Exception as exc:
+        chk("malformed: pre/previous scalar -> valid=False", False, f"crashed with {type(exc).__name__}: {exc}")
     return res
 
 
@@ -425,6 +534,23 @@ def cli_cases():
         res.append(("cli CODEBASE: NOT ASSESSED caps HEALTHY to IMPROVEMENTS RECOMMENDED",
                     [] if r.returncode == 0 and j["verdict"] == "IMPROVEMENTS RECOMMENDED" and not j["complete"]
                     else [f"rc={r.returncode} out={j}"]))
+
+        r = run(skim, "--level", "CODEBASE", "--effort", "skim")
+        res.append(("cli CODEBASE: --effort skim exits 1 with INVALID",
+                    [] if r.returncode == 1 and "INVALID:" in r.stderr else [f"rc={r.returncode} stderr={r.stderr!r}"]))
+
+        embedded = write("embedded.json", {
+            "level": "CODEBASE", "effort": "medium", "author_is_me": True,
+            "findings": [F("LOW", introduced_by_pr="codebase")], "lanes": L("adherence", "code-quality"),
+        })
+        r = run(embedded)
+        j = json.loads(r.stdout)
+        res.append(("cli: embedded breaker-input options work and CLI overrides",
+                    [] if r.returncode == 0 and j["level"] == "CODEBASE" and j["effort"] == "medium" and j["event"] == "NONE"
+                    else [f"rc={r.returncode} out={j}"]))
+
+        r = run("--help")
+        res.append(("cli: --help exits 0", [] if r.returncode == 0 and "breaker.py" in r.stdout else [f"rc={r.returncode}"]))
     return res
 
 

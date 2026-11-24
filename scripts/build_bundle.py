@@ -4,8 +4,9 @@
 Usage:
   build_bundle.py [target] [--level PR|CODEBASE] [--cwd <dir>] [--bundle-dir <dir>]
                   [--effort auto|high|medium|low|skim] [--since-last] [--fresh]
-                  [--lanes a,b] [--no-inherit] [--inline] [--spec <path-or-url>]...
-                  [--persona <path>] [--reviews-dir <dir>] [--local-only]
+                  [--lanes a,b] [--no-inherit] [--inline] [--no-tier]
+                  [--spec <path-or-url>]... [--persona <path>] [--reviews-dir <dir>]
+                  [--local-only] [--shard-max-files <n>] [--shard-max-loc <n>]
 
 Outputs a compact JSON summary to stdout and writes `<bundle_dir>/bundle-summary.json`.
 Stdlib only. All shell identifiers are strictly sanitized before any git/gh command (shell=False).
@@ -18,6 +19,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
@@ -31,7 +33,9 @@ SAFE_NUM = re.compile(r"^[0-9]+$")
 SAFE_SHA = re.compile(r"^[0-9a-f]{40}$")
 UNSAFE_SHELL = re.compile(r'[\'"`$;|&<>\\\n\r]')
 
-PR_URL_RX = re.compile(r"^https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([0-9]+)(?:/.*)?$")
+PR_URL_RX = re.compile(
+    r"^https?://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)/pull/([0-9]+)(?:[/?#].*)?$"
+)
 PR_SHORTHAND_RX = re.compile(r"^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)#([0-9]+)$")
 PR_NUM_RX = re.compile(r"^#?([0-9]+)$")
 
@@ -41,6 +45,8 @@ NON_TICKET_PREFIXES = (
     "FR-", "NFR-", "AC-", "AD-", "OQ-", "PD-", "R-", "C-", "H-", "M-", "L-", "Q-",
 )
 GH_ISSUE_URL_RX = re.compile(r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/issues/\d+")
+GH_ISSUE_SHORTHAND_RX = re.compile(r"(?<![A-Za-z0-9_./-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([0-9]+)\b")
+GH_ISSUE_LOCAL_RX = re.compile(r"(?<![A-Za-z0-9_#/&.-])#([0-9]+)\b")
 URL_RX = re.compile(r"https?://[^\s)>\]\"']+")
 
 RULE_BASENAMES = {
@@ -59,74 +65,96 @@ SPEC_BASENAMES = {
     "plan.md", "implementation_plan.md", "IMPLEMENTATION_PLAN.md", "PLAN.md",
     "design.md", "requirements.md", "tasks.md", "prd.md", "PRD.md",
 }
+SPEC_EXTS = (".md", ".mdc", ".txt", ".yaml", ".yml", ".rst", ".adoc")
 
 LOCKFILE_NAMES = {
     "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "poetry.lock", "Pipfile.lock",
     "Cargo.lock", "Gemfile.lock", "composer.lock", "go.sum", "uv.lock", "bun.lockb", "bun.lock",
 }
+LOCKFILE_NAMES_LOWER = {name.lower() for name in LOCKFILE_NAMES}
 MANIFEST_NAMES = {
     "package.json", "pyproject.toml", "go.mod", "Cargo.toml", "Gemfile",
     "pom.xml", "composer.json", "requirements.txt",
 }
+MANIFEST_NAMES_LOWER = {name.lower() for name in MANIFEST_NAMES}
+SECRET_BASENAMES_LOWER = {"id_rsa", "id_ed25519", "credentials.json"}
+
 DOC_EXTS = {".md", ".mdx", ".rst", ".txt", ".adoc"}
 ASSET_EXTS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".woff", ".woff2",
     ".ttf", ".eot", ".pdf", ".mp4", ".mp3", ".zip", ".gz", ".tar",
 }
 CODE_EXTS = {
-    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".go", ".rs", ".java", ".kt", ".kts",
-    ".rb", ".php", ".cs", ".cpp", ".cc", ".c", ".h", ".hpp", ".swift", ".scala", ".sh", ".bash",
-    ".zsh", ".sql", ".vue", ".svelte", ".dart", ".ex", ".exs", ".clj", ".lua", ".pl", ".r",
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
+    ".go", ".rs", ".java", ".kt", ".kts", ".rb", ".erb", ".php", ".cs",
+    ".cpp", ".cc", ".c", ".h", ".hpp", ".m", ".mm", ".swift", ".scala",
+    ".sh", ".bash", ".zsh", ".ps1", ".sql", ".vue", ".svelte", ".astro",
+    ".dart", ".ex", ".exs", ".erl", ".hs", ".clj", ".lua", ".pl", ".r",
+    ".tf", ".hcl", ".groovy", ".zig", ".nim", ".jl",
 }
 LANG_MAP = {
-    ".py": "python", ".js": "javascript", ".jsx": "javascript", ".ts": "typescript",
-    ".tsx": "typescript", ".go": "go", ".rs": "rust", ".java": "java", ".kt": "kotlin",
-    ".rb": "ruby", ".php": "php", ".cs": "csharp", ".cpp": "cpp", ".c": "c", ".swift": "swift",
-    ".sql": "sql", ".vue": "vue", ".svelte": "svelte", ".md": "markdown", ".json": "json",
-    ".yaml": "yaml", ".yml": "yaml", ".toml": "toml", ".sh": "shell", ".css": "css", ".html": "html",
+    ".py": "python", ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
+    ".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
+    ".go": "go", ".rs": "rust", ".java": "java", ".kt": "kotlin", ".kts": "kotlin",
+    ".rb": "ruby", ".erb": "ruby", ".php": "php", ".cs": "csharp", ".cpp": "cpp", ".cc": "cpp",
+    ".c": "c", ".h": "c", ".hpp": "cpp", ".m": "objc", ".mm": "objcpp", ".swift": "swift",
+    ".scala": "scala", ".sql": "sql", ".vue": "vue", ".svelte": "svelte", ".astro": "astro",
+    ".dart": "dart", ".ex": "elixir", ".exs": "elixir", ".erl": "erlang", ".hs": "haskell",
+    ".clj": "clojure", ".lua": "lua", ".pl": "perl", ".r": "r", ".tf": "terraform", ".hcl": "hcl",
+    ".groovy": "groovy", ".zig": "zig", ".nim": "nim", ".jl": "julia", ".md": "markdown",
+    ".json": "json", ".yaml": "yaml", ".yml": "yaml", ".toml": "toml",
+    ".sh": "shell", ".bash": "shell", ".zsh": "shell", ".ps1": "powershell",
+    ".css": "css", ".scss": "scss", ".html": "html",
 }
 
 SIGNAL_RULES = {
     "auth": re.compile(
         r"\b(auth|authentication|authorization|authorisation|permission|policy|guard|middleware|"
         r"scope|token|jwt|oauth|session|role|acl|login_required|Authorize|PreAuthorize|before_action)\b",
-        re.I,
+        re.I | re.M,
     ),
     "input": re.compile(
         r"(controller|handler|serializer|dto|validator|upload|webhook|deseriali[sz]|raw_sql|"
-        r"request\.body|req\.query|request\.data|params\[|SELECT\s+.+\+|execute\s*\()",
-        re.I,
+        r"request\.body|req\.query|request\.data|params\[|SELECT\s+[^\n]+\+|execute\s*\()",
+        re.I | re.M,
     ),
     "deps": re.compile(
-        r"(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|requirements.*\.txt|"
+        r"(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|requirements[^\n/]*\.txt|"
         r"pyproject\.toml|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|Gemfile|pom\.xml|"
         r"build\.gradle|composer\.json|\.csproj|Dockerfile|\.github/workflows/)",
-        re.I,
+        re.I | re.M,
     ),
     "data": re.compile(
-        r"(migrations?/|db/migrate/|\.sql$|flyway|liquibase|\bmodels?\b|\bentities?\b|"
+        r"((?:^|/)migrations?/|(?:^|/)db/migrate/|\.sql$|flyway|liquibase|\bmodels?\b|\bentities?\b|"
         r"\bALTER\s+TABLE\b|\bDROP\s+TABLE\b|bulk_update|bulk_delete|backfill)",
-        re.I,
+        re.I | re.M,
     ),
     "contract": re.compile(
-        r"(routes?/|router|openapi|swagger|graphql|\.proto$|\.avsc$|/v[12]/|/public/|"
+        r"((?:^|/)routes?/|router|openapi|swagger|graphql|\.proto$|\.avsc$|(?:^|/)v[12]/|(?:^|/)public/|"
         r"serializer|schema|event_schema|feature_flag|featureFlag)",
-        re.I,
+        re.I | re.M,
     ),
     "perf": re.compile(
         r"(pagination|paginate|cache|redis|memcached|worker|background|batch|prefetch|"
-        r"select_related|N\+1|useMemo|useCallback|for\s+.*:\s*.*(?:query|fetch|http|requests\.))",
-        re.I,
+        r"select_related|N\+1|useMemo|useCallback|\bfor\s+[^\n:]{1,120}:[^\n]{0,200}(?:query|fetch|http|requests\.))",
+        re.I | re.M,
     ),
     "async": re.compile(
         r"(\basync\b|\bawait\b|goroutine|\bgo\s+\w+|threading|mutex|\block\b|semaphore|"
         r"celery|sidekiq|bullmq|kafka|rabbitmq|transaction|on_commit|after_commit|retry|backoff|idempoten)",
-        re.I,
+        re.I | re.M,
     ),
-    "ui": re.compile(r"(\.tsx$|\.jsx$|\.vue$|\.svelte$|\.css$|\.scss$|components?/|views?/|screens?/)", re.I),
+    "ui": re.compile(
+        r"(\.tsx$|\.jsx$|\.vue$|\.svelte$|\.css$|\.scss$|(?:^|/)components?/|(?:^|/)views?/|(?:^|/)screens?/)",
+        re.I | re.M,
+    ),
 }
 
 REVIEW_LEVELS = ("PR", "CODEBASE")
+VALID_LANES = {
+    "adherence", "business-logic", "code-quality", "conventions",
+    "security", "performance", "compatibility", "robustness", "critical-risk", "skim",
+}
 MICRO_FOLD_MAX_LINES = 40
 MICRO_FOLD_MAX_FILES = 2
 MICRO_FOLDABLE_LANES = ("performance", "compatibility", "robustness")
@@ -134,13 +162,23 @@ CODEBASE_SHARD_MAX_FILES = 30
 CODEBASE_SHARD_MAX_LOC = 6000
 CODEBASE_SCAN_MAX_BYTES = 262144
 WALK_SKIP_DIRS = {
-    ".git", "node_modules", "dist", "build", "__pycache__", ".venv", "venv",
+    ".git", "node_modules", "__pycache__", ".venv", "venv",
     ".tox", ".mypy_cache", ".pytest_cache", ".next", "target", ".idea", ".vscode",
 }
 CODEBASE_DOC_BASENAMES = {
     "README.md", "ARCHITECTURE.md", "DESIGN.md", "CONTRIBUTING.md", "SECURITY.md",
 }
+KNOWN_BOT_LOGINS = {
+    "dependabot", "renovate", "github-actions", "codecov", "sonarcloud",
+    "mergify", "snyk-bot", "pre-commit-ci",
+}
+DEFAULT_REVIEWS_DIR = os.path.expanduser("~/.claude/review/reviews")
+LEGACY_REVIEWS_DIR = os.path.expanduser("~/.claude/generic-pr-review/reviews")
 
+
+# ---------------------------------------------------------------------------
+# Process, path, and file classifiers
+# ---------------------------------------------------------------------------
 
 def run_cmd(argv, cwd=None, timeout=60):
     try:
@@ -154,21 +192,31 @@ def run_cmd(argv, cwd=None, timeout=60):
 
 
 def is_safe_relpath(p):
-    if not p or p.startswith("/") or "\\" in p:
+    if not p or "\x00" in p or p.startswith("/") or p.endswith("/") or "\\" in p:
         return False
     parts = p.split("/")
-    return ".." not in parts and "." not in parts
+    return "" not in parts and ".." not in parts and "." not in parts
 
 
-def is_denylisted(path):
-    base = os.path.basename(path)
+def is_lockfile(path):
+    low_base = os.path.basename(path).lower()
+    return low_base in LOCKFILE_NAMES_LOWER or low_base.endswith(".lock")
+
+
+def is_secret_or_vendor(path):
     low = path.lower()
-    if base.startswith(".env") or low.endswith(".pem") or base in ("id_rsa", "id_ed25519", "credentials.json"):
+    low_base = os.path.basename(low)
+    parts = low.split("/")
+    if low_base.startswith(".env") or low.endswith(".pem") or low_base in SECRET_BASENAMES_LOWER:
         return True
-    if "node_modules/" in path or base in LOCKFILE_NAMES or low.endswith(".lock"):
+    if "node_modules" in parts:
         return True
     _, ext = os.path.splitext(low)
     return ext in ASSET_EXTS
+
+
+def is_denylisted(path):
+    return is_secret_or_vendor(path) or is_lockfile(path)
 
 
 def is_test_path(path):
@@ -178,36 +226,35 @@ def is_test_path(path):
         return True
     return bool(
         re.search(r"\.(?:spec|test)\.[^/]+$", base, re.I)
-        or base.startswith("test_")
+        or base.lower().startswith("test_")
         or re.search(r"_test\.[^/]+$", base, re.I)
-        or base.endswith(".snap")
+        or base.lower().endswith(".snap")
     )
 
 
 def is_generated_or_locale(path):
     low = path.lower()
     parts = low.split("/")
-    if any(seg in parts for seg in ("generated", "locale", "locales", "__snapshots__", "dist", "build")):
+    if any(seg in parts for seg in ("generated", "locale", "locales", "__snapshots__")):
         return True
-    return low.endswith((".po", ".min.js", ".min.css", ".snap", ".lock")) or os.path.basename(path) in LOCKFILE_NAMES
+    return low.endswith((".po", ".min.js", ".min.css", ".snap"))
 
 
 def is_lock_or_manifest(path):
-    base = os.path.basename(path)
+    low_base = os.path.basename(path).lower()
     return (
-        base in LOCKFILE_NAMES
-        or base in MANIFEST_NAMES
-        or base.endswith(".lock")
-        or bool(re.match(r"^requirements.*\.txt$", base))
-        or base.startswith("build.gradle")
-        or base.endswith(".csproj")
+        is_lockfile(path)
+        or low_base in MANIFEST_NAMES_LOWER
+        or bool(re.match(r"^requirements.*\.txt$", low_base))
+        or low_base.startswith("build.gradle")
+        or low_base.endswith(".csproj")
     )
 
 
 def is_rule_file(path):
     base = os.path.basename(path)
     low_base = base.lower()
-    if base in RULE_BASENAMES or path in RULE_EXACT:
+    if base in RULE_BASENAMES or path in RULE_EXACT or any(path.endswith("/" + ex) for ex in RULE_EXACT):
         return True
     if any(path.startswith(pref) or f"/{pref}" in path for pref in RULE_PREFIXES):
         return True
@@ -216,8 +263,11 @@ def is_rule_file(path):
 
 def is_spec_file(path):
     base = os.path.basename(path)
-    if base in SPEC_BASENAMES or base.endswith((".spec.md", ".plan.md")):
+    low = path.lower()
+    if base in SPEC_BASENAMES or low.endswith((".spec.md", ".plan.md")):
         return True
+    if not low.endswith(SPEC_EXTS):
+        return False
     return any(path.startswith(pref) or f"/{pref}" in path for pref in SPEC_PREFIXES)
 
 
@@ -236,40 +286,94 @@ def lang_of(path):
     return LANG_MAP.get(ext, ext.lstrip(".") or "other")
 
 
+# ---------------------------------------------------------------------------
+# Diff and persona parsing
+# ---------------------------------------------------------------------------
+
 def parse_diff_by_file(diff_text):
     """Split a unified diff into per-file sections with status and +/- line counts."""
     sections = []
     cur = None
+    old_rem = 0
+    new_rem = 0
+    in_header = True
+
     for line in diff_text.splitlines(keepends=True):
+        if cur is not None and (old_rem > 0 or new_rem > 0):
+            cur["lines"].append(line)
+            if line.startswith("+"):
+                cur["adds"] += 1
+                if new_rem > 0:
+                    new_rem -= 1
+            elif line.startswith("-"):
+                cur["dels"] += 1
+                if old_rem > 0:
+                    old_rem -= 1
+            elif line.startswith("\\"):
+                continue
+            else:
+                if old_rem > 0:
+                    old_rem -= 1
+                if new_rem > 0:
+                    new_rem -= 1
+            continue
+
         if line.startswith("diff --git "):
             if cur:
                 sections.append(cur)
-            m = re.match(r"^diff --git a/(.+?) b/(.+?)\s*$", line)
-            old_p = m.group(1) if m else ""
-            new_p = m.group(2) if m else ""
+            old_p, new_p = diff_map.parse_diff_git_paths(line)
             cur = {
-                "old_path": old_p, "path": new_p, "status": "modified",
-                "adds": 0, "dels": 0, "binary": False, "lines": [line],
+                "old_path": old_p,
+                "path": new_p,
+                "status": "modified",
+                "adds": 0,
+                "dels": 0,
+                "binary": False,
+                "lines": [line],
             }
+            old_rem = 0
+            new_rem = 0
+            in_header = True
             continue
         if cur is None:
             continue
         cur["lines"].append(line)
-        if line.startswith("new file mode "):
-            cur["status"] = "added"
-        elif line.startswith("deleted file mode "):
-            cur["status"] = "deleted"
-        elif line.startswith("rename from "):
-            cur["status"] = "renamed"
-            cur["old_path"] = line[len("rename from "):].strip()
-        elif line.startswith("rename to "):
-            cur["path"] = line[len("rename to "):].strip()
-        elif line.startswith("Binary files ") or line.startswith("GIT binary patch"):
-            cur["binary"] = True
-        elif line.startswith("+") and not line.startswith("+++ "):
-            cur["adds"] += 1
-        elif line.startswith("-") and not line.startswith("--- "):
-            cur["dels"] += 1
+        if in_header and not cur["binary"]:
+            if line.startswith("new file mode "):
+                cur["status"] = "added"
+            elif line.startswith("deleted file mode "):
+                cur["status"] = "deleted"
+            elif line.startswith("rename from "):
+                cur["status"] = "renamed"
+                cur["old_path"] = diff_map.parse_header_path(line[len("rename from "):])
+            elif line.startswith("rename to "):
+                cur["path"] = diff_map.parse_header_path(line[len("rename to "):])
+            elif line.startswith("copy from "):
+                cur["status"] = "added"
+                cur["old_path"] = diff_map.parse_header_path(line[len("copy from "):])
+            elif line.startswith("copy to "):
+                cur["path"] = diff_map.parse_header_path(line[len("copy to "):])
+            elif line.startswith("Binary files ") or line.startswith("GIT binary patch"):
+                cur["binary"] = True
+            elif line.startswith("--- "):
+                src = diff_map.strip_diff_prefix(diff_map.parse_header_path(line[4:]), "a/")
+                if src and src != "/dev/null":
+                    cur["old_path"] = src
+            elif line.startswith("+++ "):
+                tgt = diff_map.strip_diff_prefix(diff_map.parse_header_path(line[4:]), "b/")
+                if tgt == "/dev/null":
+                    cur["status"] = "deleted"
+                elif tgt:
+                    cur["path"] = tgt
+            elif line.startswith("@@"):
+                hm = diff_map.parse_hunk_header(line)
+                if hm:
+                    _, old_rem, _, new_rem = hm
+                    in_header = False
+        elif not cur["binary"] and line.startswith("@@"):
+            hm = diff_map.parse_hunk_header(line)
+            if hm:
+                _, old_rem, _, new_rem = hm
     if cur:
         sections.append(cur)
     for s in sections:
@@ -279,50 +383,127 @@ def parse_diff_by_file(diff_text):
     return sections
 
 
+def _extract_changed_lines(diff_section_text):
+    """Extract added and removed content lines strictly inside diff hunks."""
+    out = []
+    old_rem = 0
+    new_rem = 0
+    for raw in diff_section_text.splitlines():
+        if old_rem > 0 or new_rem > 0:
+            if raw.startswith("+"):
+                out.append(raw[1:])
+                if new_rem > 0:
+                    new_rem -= 1
+            elif raw.startswith("-"):
+                out.append(raw[1:])
+                if old_rem > 0:
+                    old_rem -= 1
+            elif raw.startswith("\\"):
+                continue
+            else:
+                if old_rem > 0:
+                    old_rem -= 1
+                if new_rem > 0:
+                    new_rem -= 1
+            continue
+        if raw.startswith("@@"):
+            hm = diff_map.parse_hunk_header(raw)
+            if hm:
+                _, old_rem, _, new_rem = hm
+    return "\n".join(out)
+
+
+def _strip_yaml_comment(raw):
+    """Strip an unquoted `# ...` comment from a YAML frontmatter line."""
+    quote = None
+    escape = False
+    for idx, ch in enumerate(raw):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and quote == '"':
+            escape = True
+            continue
+        if ch in ("'", '"'):
+            if quote is None:
+                quote = ch
+            elif quote == ch:
+                quote = None
+        elif ch == "#" and quote is None:
+            return raw[:idx].rstrip()
+    return raw.rstrip()
+
+
 def parse_persona_frontmatter(persona_path):
     """Parse persona.md frontmatter + detect active §8/§9 rules without external YAML libs."""
     info = {
         "status": "empty", "refreshed": None, "memory": "ask",
         "emphasis": [], "has_house_rules": False, "has_learned_prefs": False,
-        "voice": {"tone": "direct", "max_inline": 8, "hold_event": "REQUEST_CHANGES"},
+        "voice": {
+            "tone": "direct",
+            "spelling": "american",
+            "max_inline": 8,
+            "hold_event": "REQUEST_CHANGES",
+            "comment_prefix": "[{SEVERITY}]",
+            "nit_prefix": "Nit:",
+            "emoji": "none",
+        },
     }
     if not persona_path or not os.path.isfile(persona_path):
         return info
-    text = open(persona_path, encoding="utf-8", errors="replace").read()
+    with open(persona_path, encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
     m = re.match(r"^---\s*\n(.*?)\n---\s*\n(.*)$", text, re.S)
     if m:
         fm, body = m.group(1), m.group(2)
         in_emphasis = False
+        cur_section = None
         for raw in fm.splitlines():
-            line = raw.split("#", 1)[0].rstrip()
+            line = _strip_yaml_comment(raw)
             if not line.strip():
                 continue
             if re.match(r"^emphasis:\s*\[(.*)\]\s*$", line):
                 items = [x.strip().strip("'\"") for x in re.match(r"^emphasis:\s*\[(.*)\]", line).group(1).split(",") if x.strip()]
                 info["emphasis"] = items
                 in_emphasis = False
+                cur_section = None
             elif re.match(r"^emphasis:\s*$", line):
                 in_emphasis = True
-            elif in_emphasis and re.match(r"^\s+-\s+(.+)$", line):
-                info["emphasis"].append(re.match(r"^\s+-\s+(.+)$", line).group(1).strip().strip("'\""))
+                cur_section = "emphasis"
+            elif in_emphasis and re.match(r"^\s*-\s+(.+)$", line):
+                info["emphasis"].append(re.match(r"^\s*-\s+(.+)$", line).group(1).strip().strip("'\""))
             else:
                 in_emphasis = False
+                sec_hdr = re.match(r"^([A-Za-z0-9_]+):\s*$", line)
+                if sec_hdr:
+                    cur_section = sec_hdr.group(1)
+                    continue
                 kv = re.match(r"^(\s*)([A-Za-z0-9_]+):\s*(.+?)\s*$", line)
                 if kv:
                     indent, k, v = len(kv.group(1)), kv.group(2), kv.group(3).strip("'\"")
                     if indent == 0:
+                        cur_section = None
                         if k == "status":
                             info["status"] = v
                         elif k == "refreshed":
                             info["refreshed"] = None if v == "null" else v
                         elif k == "memory":
                             info["memory"] = v
-                    elif k == "tone":
-                        info["voice"]["tone"] = v
-                    elif k == "max_inline" and v.isdigit():
-                        info["voice"]["max_inline"] = int(v)
-                    elif k == "hold_event":
-                        info["voice"]["hold_event"] = v
+                    elif cur_section in (None, "voice"):
+                        if k == "tone":
+                            info["voice"]["tone"] = v
+                        elif k == "spelling":
+                            info["voice"]["spelling"] = v
+                        elif k == "max_inline" and v.isdigit():
+                            info["voice"]["max_inline"] = int(v)
+                        elif k == "hold_event":
+                            info["voice"]["hold_event"] = v
+                        elif k == "comment_prefix":
+                            info["voice"]["comment_prefix"] = v
+                        elif k == "nit_prefix":
+                            info["voice"]["nit_prefix"] = v
+                        elif k == "emoji":
+                            info["voice"]["emoji"] = v
     else:
         body = text
 
@@ -337,23 +518,60 @@ def parse_persona_frontmatter(persona_path):
     return info
 
 
+def _persona_summary(persona):
+    return {
+        "status": persona["status"],
+        "refreshed": persona["refreshed"],
+        "memory": persona["memory"],
+        "emphasis": list(persona.get("emphasis") or []),
+        "voice": persona["voice"],
+        "has_rules": bool(persona["has_house_rules"] or persona["has_learned_prefs"]),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Target, clone, GitHub API, CI, and snapshot helpers
+# ---------------------------------------------------------------------------
+
+def _parse_github_remote(url):
+    rm = re.search(r"github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$", str(url or "").strip())
+    if not rm:
+        return None, None
+    owner, repo = rm.group(1), rm.group(2)
+    if owner in (".", "..") or repo in (".", ".."):
+        return None, None
+    return owner, repo
+
+
 def find_clone(cwd, owner=None, repo=None):
     candidates = []
     rc, top, _ = run_cmd(["git", "rev-parse", "--show-toplevel"], cwd=cwd)
     if rc == 0 and top.strip():
         candidates.append(top.strip())
-    if repo:
+    if repo and SAFE_IDENT.match(repo) and repo not in (".", ".."):
         candidates.append(os.path.join(cwd, repo))
         candidates.append(os.path.join(os.path.dirname(os.path.abspath(cwd)), repo))
+    exact_rx = None
+    if owner and repo:
+        exact_rx = re.compile(rf"(?:[:/]){re.escape(owner)}/{re.escape(repo)}(?:\.git)?/?$", re.I)
     for cand in candidates:
         if not os.path.isdir(cand):
             continue
         if not owner or not repo:
             return cand
         rc, url, _ = run_cmd(["git", "-C", cand, "remote", "get-url", "origin"])
-        if rc == 0 and f"{owner}/{repo}" in url:
+        if rc == 0 and exact_rx.search(url.strip()):
             return cand
     return None
+
+
+def _validated_pr_coords(owner, repo, num):
+    if (
+        owner in (".", "..") or repo in (".", "..")
+        or not SAFE_IDENT.match(owner) or not SAFE_IDENT.match(repo) or not SAFE_NUM.match(num)
+    ):
+        raise ValueError("invalid owner, repo, or pull request number")
+    return "pr", owner, repo, num, f"https://github.com/{owner}/{repo}/pull/{num}"
 
 
 def parse_target(target, cwd):
@@ -365,23 +583,20 @@ def parse_target(target, cwd):
         raise ValueError("unsafe characters in target argument")
     m = PR_URL_RX.match(t)
     if m:
-        owner, repo, num = m.group(1), m.group(2), m.group(3)
-        return "pr", owner, repo, num, f"https://github.com/{owner}/{repo}/pull/{num}"
+        return _validated_pr_coords(m.group(1), m.group(2), m.group(3))
     m = PR_SHORTHAND_RX.match(t)
     if m:
-        owner, repo, num = m.group(1), m.group(2), m.group(3)
-        return "pr", owner, repo, num, f"https://github.com/{owner}/{repo}/pull/{num}"
+        return _validated_pr_coords(m.group(1), m.group(2), m.group(3))
     m = PR_NUM_RX.match(t)
     if m:
         num = m.group(1)
         rc, url, _ = run_cmd(["git", "remote", "get-url", "origin"], cwd=cwd)
         if rc != 0:
             raise ValueError("cannot infer owner/repo for #N without git origin")
-        rm = re.search(r"github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?$", url.strip())
-        if not rm:
+        owner, repo = _parse_github_remote(url)
+        if not owner or not repo:
             raise ValueError("origin remote is not a GitHub repository")
-        owner, repo = rm.group(1), rm.group(2)
-        return "pr", owner, repo, num, f"https://github.com/{owner}/{repo}/pull/{num}"
+        return _validated_pr_coords(owner, repo, num)
     raise ValueError(f"unrecognized target format: {t}")
 
 
@@ -396,9 +611,13 @@ def compute_ci(rollup):
         concl = str(item.get("conclusion") or "").upper()
         state = str(item.get("state") or item.get("status") or "").upper()
         name = item.get("name") or item.get("context") or "check"
-        if concl in ("FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED") or state in ("ERROR", "FAILURE"):
+        if concl in ("FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE") or state in ("ERROR", "FAILURE"):
             failing.append(name)
-        elif state in ("PENDING", "IN_PROGRESS", "QUEUED", "EXPECTED", "WAITING") or (not concl and state != "SUCCESS"):
+        elif (
+            state in ("PENDING", "IN_PROGRESS", "QUEUED", "EXPECTED", "WAITING")
+            or concl == "STALE"
+            or (not concl and state != "SUCCESS")
+        ):
             pending = True
     if failing:
         return "failing: " + ", ".join(failing[:5])
@@ -407,15 +626,169 @@ def compute_ci(rollup):
     return "passing"
 
 
+def parse_paginated_json_list(raw_text):
+    """Parse concatenated JSON arrays or NDJSON objects emitted by `gh api --paginate`."""
+    text = (raw_text or "").strip()
+    if not text:
+        return [], True
+    decoder = json.JSONDecoder()
+    items = []
+    pos = 0
+    n = len(text)
+    while pos < n:
+        while pos < n and text[pos].isspace():
+            pos += 1
+        if pos >= n:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, pos)
+        except ValueError:
+            return [], False
+        if isinstance(obj, list):
+            items.extend(x for x in obj if isinstance(x, dict))
+        elif isinstance(obj, dict):
+            items.append(obj)
+        pos = end
+    return items, True
+
+
+def is_bot_author(author_obj):
+    if not isinstance(author_obj, dict):
+        return False
+    login = str(author_obj.get("login") or "").lower()
+    return bool(author_obj.get("is_bot")) or (
+        login in KNOWN_BOT_LOGINS or login.endswith(("[bot]", "-bot", "_bot"))
+    )
+
+
+def sanitize_pr_data(pr_data):
+    """Strip commit author names/emails from pr.json while preserving headlines and author login/bot flag."""
+    if not isinstance(pr_data, dict):
+        return pr_data
+    clean = dict(pr_data)
+    if isinstance(clean.get("author"), dict):
+        author = clean["author"]
+        clean["author"] = {k: author[k] for k in ("login", "is_bot") if k in author}
+    if isinstance(clean.get("commits"), list):
+        clean_commits = []
+        for c in clean["commits"]:
+            if isinstance(c, dict):
+                entry = {}
+                if "messageHeadline" in c:
+                    entry["messageHeadline"] = c["messageHeadline"]
+                if "oid" in c:
+                    entry["oid"] = c["oid"]
+                clean_commits.append(entry)
+            else:
+                clean_commits.append(c)
+        clean["commits"] = clean_commits
+    return clean
+
+
+def _resolve_bundle_dir(bundle_dir_arg, owner, repo, identifier, sha7):
+    if bundle_dir_arg:
+        bundle_dir = os.path.abspath(bundle_dir_arg)
+    else:
+        job_dir = os.environ.get("CLAUDE_JOB_DIR")
+        base_tmp = os.path.join(job_dir, "tmp") if job_dir else tempfile.gettempdir()
+        bundle_dir = os.path.join(base_tmp, "review", f"{owner}-{repo}-{identifier}-{sha7}")
+    os.makedirs(bundle_dir, exist_ok=True)
+    return bundle_dir
+
+
+def copy_snapshot_files(clone, head_sha, paths, out_root, owner=None, repo=None):
+    """Copy repo files at head_sha into out_root in parallel threads."""
+    if not SAFE_SHA.match(str(head_sha or "")):
+        return [], list(paths)
+    copied = []
+    failed = []
+
+    def fetch_one(path):
+        if not is_safe_relpath(path) or is_denylisted(path):
+            return path, False
+        dst = os.path.join(out_root, path)
+        if clone:
+            rc, content, _ = run_cmd(["git", "-C", clone, "show", f"{head_sha}:{path}"])
+        elif owner and repo:
+            qpath = urllib.parse.quote(path, safe="/")
+            rc, content, _ = run_cmd([
+                "gh", "api", f"repos/{owner}/{repo}/contents/{qpath}?ref={head_sha}",
+                "-H", "Accept: application/vnd.github.raw",
+            ])
+        else:
+            return path, False
+        if rc != 0:
+            return path, False
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "w", encoding="utf-8", errors="replace") as fh:
+            fh.write(content)
+        return path, True
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        for p, ok in ex.map(fetch_one, paths):
+            (copied if ok else failed).append(p)
+    return copied, failed
+
+
+def find_context_files(clone, head_sha, changed_paths, max_files, max_loc):
+    if not clone or not head_sha or not SAFE_SHA.match(head_sha):
+        return []
+    changed_set = set(changed_paths)
+    scores = {}
+
+    def grep_one(path):
+        base = os.path.splitext(os.path.basename(path))[0]
+        if len(base) < 3 or base in ("index", "main", "init", "__init__", "utils", "types"):
+            return []
+        found = []
+        rc, out, _ = run_cmd(["git", "-C", clone, "grep", "-l", "-F", "-e", base, head_sha])
+        if rc == 0:
+            for m in out.splitlines():
+                if ":" in m:
+                    m = m.split(":", 1)[1]
+                if (
+                    m not in changed_set
+                    and is_safe_relpath(m)
+                    and not is_denylisted(m)
+                    and not is_generated_or_locale(m)
+                ):
+                    found.append(m)
+        return found
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+        for hits in ex.map(grep_one, changed_paths[:20]):
+            for h in hits:
+                scores[h] = scores.get(h, 0) + 1
+
+    ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+    selected = []
+    total_loc = 0
+    for path, _ in ranked:
+        if len(selected) >= max_files:
+            break
+        rc, content, _ = run_cmd(["git", "-C", clone, "show", f"{head_sha}:{path}"])
+        if rc != 0 or "\x00" in content[:8192]:
+            continue
+        loc = content.count("\n") + 1
+        if total_loc + loc > max_loc:
+            continue
+        selected.append((path, content))
+        total_loc += loc
+    return selected
+
+
+# ---------------------------------------------------------------------------
+# Signals, slicing, sharding, and lane selection
+# ---------------------------------------------------------------------------
+
 def detect_signals(sections):
     signals = {}
     for sec in sections:
         path = sec["path"]
-        added_lines = "\n".join(
-            ln[1:] for ln in sec["text"].splitlines()
-            if ln.startswith("+") and not ln.startswith("+++ ")
-        )
-        haystack = path + "\n" + added_lines
+        if is_doc_or_asset(path) and not is_lock_or_manifest(path):
+            continue
+        changed = _extract_changed_lines(sec["text"])
+        haystack = path + "\n" + changed
         for sig, rx in SIGNAL_RULES.items():
             if rx.search(haystack):
                 signals.setdefault(sig, []).append(path)
@@ -431,7 +804,7 @@ def slice_lanes(sections, signals):
     }
     for sec in sections:
         p = sec["path"]
-        if sec["binary"]:
+        if sec["binary"] or is_secret_or_vendor(p):
             continue
         is_lock = is_lock_or_manifest(p)
         is_gen = is_generated_or_locale(p)
@@ -469,7 +842,50 @@ def slice_lanes(sections, signals):
     return manifest, patches
 
 
-def select_lanes(effort, signals, lane_manifest, persona, rules_changed, args, small_pr):
+def parse_lanes_arg(raw_lanes):
+    if not raw_lanes:
+        return []
+    req = [x.strip() for x in str(raw_lanes).split(",") if x.strip()]
+    if not req:
+        raise ValueError("--lanes requires at least one lane name")
+    invalid = [ln for ln in req if ln not in VALID_LANES]
+    if invalid:
+        raise ValueError(f"unknown lane(s) in --lanes: {', '.join(invalid)}")
+    return list(dict.fromkeys(req))
+
+
+def _low_effort_plan(lines_count, threshold_label, no_tier, raw_lanes, files_list=None, file_count=None):
+    req_lanes = parse_lanes_arg(raw_lanes)
+    focus_suffix = f" (focus: {', '.join(req_lanes)})" if req_lanes else ""
+    inline = lines_count < 400
+    tier = "inline" if inline else ("standard" if no_tier else "fast")
+    why = f"{threshold_label} under 400 lines{focus_suffix}" if inline else f"{threshold_label} single lane{focus_suffix}"
+    entry = {"lane": "critical-risk", "tier": tier, "why": why}
+    if files_list is not None:
+        entry["files_list"] = files_list
+    if file_count is not None:
+        entry["file_count"] = file_count
+    if req_lanes:
+        entry["focus_lanes"] = req_lanes
+    plan = {"selected": [entry], "folded": [], "skipped": [], "inline_adherence": inline}
+    if req_lanes:
+        plan["focus_lanes"] = req_lanes
+    return plan
+
+
+def _apply_cap_overflow(overflow, fold_target, fold_why, skip_fold_prefix, cap_why):
+    folded = []
+    skipped = []
+    for ln, _ in overflow:
+        if fold_target and ln in ("security", "performance", "compatibility", "robustness"):
+            folded.append({"lane": ln, "into": fold_target, "why": fold_why})
+            skipped.append({"lane": ln, "why": f"folded into {fold_target} ({skip_fold_prefix})"})
+        else:
+            skipped.append({"lane": ln, "why": cap_why})
+    return folded, skipped
+
+
+def select_lanes(effort, signals, lane_manifest, persona, rules_changed, args, small_pr, core_lines=None):
     """Apply conditional triggers, micro-lane folding, effort caps, overrides, and tiering."""
     if effort == "skim":
         tier = "standard" if args.no_tier else "fast"
@@ -478,19 +894,11 @@ def select_lanes(effort, signals, lane_manifest, persona, rules_changed, args, s
             "folded": [], "skipped": [], "inline_adherence": False,
         }
     if effort == "low":
-        core_lines = sum(
-            s["changed_lines"] for k, s in lane_manifest.items() if k == "code-quality"
-        )
-        if core_lines < 400 and not args.lanes:
-            return {
-                "selected": [{"lane": "critical-risk", "tier": "inline", "why": "low effort under 400 lines"}],
-                "folded": [], "skipped": [], "inline_adherence": True,
-            }
-        tier = "standard" if args.no_tier else "fast"
-        return {
-            "selected": [{"lane": "critical-risk", "tier": tier, "why": "low effort single lane"}],
-            "folded": [], "skipped": [], "inline_adherence": False,
-        }
+        if core_lines is None:
+            core_lines = sum(
+                s["changed_lines"] for k, s in lane_manifest.items() if k == "code-quality"
+            )
+        return _low_effort_plan(core_lines, "low effort", args.no_tier, args.lanes)
 
     # high and medium always run all lanes on standard (inherit) tier
     emphasis = {e.lower() for e in persona.get("emphasis") or []}
@@ -498,7 +906,7 @@ def select_lanes(effort, signals, lane_manifest, persona, rules_changed, args, s
     folded = []
 
     if args.lanes:
-        req = [x.strip() for x in args.lanes.split(",") if x.strip()]
+        req = parse_lanes_arg(args.lanes)
         selected = [{"lane": ln, "tier": "standard", "why": "explicit --lanes override"} for ln in req]
         return {"selected": selected, "folded": [], "skipped": [], "inline_adherence": False}
 
@@ -551,6 +959,9 @@ def select_lanes(effort, signals, lane_manifest, persona, rules_changed, args, s
             skipped.append({"lane": lane_name, "why": "no matching diff signal"})
             continue
         stats = lane_manifest[lane_name]
+        if stats["file_count"] == 0:
+            skipped.append({"lane": lane_name, "why": "no eligible files in lane slice"})
+            continue
         # Micro-lane auto-folding for performance, compatibility, robustness (never security on auth/input)
         if (
             lane_name in MICRO_FOLDABLE_LANES
@@ -571,12 +982,9 @@ def select_lanes(effort, signals, lane_manifest, persona, rules_changed, args, s
         # Lead runs adherence inline; launch up to 2 highest-priority remaining lanes
         rem = [c for c in candidates if c[0] != "adherence"]
         kept_rem = rem[:2]
-        for ln, _ in rem[2:]:
-            if ln in ("security", "performance", "compatibility", "robustness") and fold_target:
-                folded.append({"lane": ln, "into": fold_target, "why": "small-PR cap fold"})
-                skipped.append({"lane": ln, "why": f"folded into {fold_target} (small-PR mode)"})
-            else:
-                skipped.append({"lane": ln, "why": "small-PR cap"})
+        f_ov, s_ov = _apply_cap_overflow(rem[2:], fold_target, "small-PR cap fold", "small-PR mode", "small-PR cap")
+        folded.extend(f_ov)
+        skipped.extend(s_ov)
         return {
             "selected": [{"lane": "adherence", "tier": "inline", "why": "small-PR inline adherence"}]
             + [{"lane": ln, "tier": "standard", "why": w} for ln, w in kept_rem],
@@ -584,163 +992,14 @@ def select_lanes(effort, signals, lane_manifest, persona, rules_changed, args, s
         }
 
     kept = candidates[:cap]
-    overflow = candidates[cap:]
-    for ln, _ in overflow:
-        if fold_target and ln in ("security", "performance", "compatibility", "robustness"):
-            folded.append({"lane": ln, "into": fold_target, "why": f"{effort} effort lane cap ({cap})"})
-            skipped.append({"lane": ln, "why": f"folded into {fold_target} (cap {cap})"})
-        else:
-            skipped.append({"lane": ln, "why": f"exceeded cap ({cap})"})
+    f_ov, s_ov = _apply_cap_overflow(candidates[cap:], fold_target, f"{effort} effort lane cap ({cap})", f"cap {cap}", f"exceeded cap ({cap})")
+    folded.extend(f_ov)
+    skipped.extend(s_ov)
 
     return {
         "selected": [{"lane": ln, "tier": "standard", "why": w} for ln, w in kept],
         "folded": folded, "skipped": skipped, "inline_adherence": False,
     }
-
-
-def extract_intent_hints(pr_data, sections, clone, head_sha, cli_specs):
-    title = str(pr_data.get("title") or "")
-    body = str(pr_data.get("body") or "")
-    branch = str(pr_data.get("headRefName") or "")
-    commits = [
-        (c.get("messageHeadline") if isinstance(c, dict) else str(c))
-        for c in (pr_data.get("commits") or [])
-    ]
-    blob = "\n".join([title, body, branch] + commits)
-
-    tickets = []
-    for key in sorted(set(TRACKER_KEY_RX.findall(blob))):
-        if not any(key.startswith(pref) for pref in NON_TICKET_PREFIXES):
-            tickets.append(key)
-
-    gh_issues = sorted(set(GH_ISSUE_URL_RX.findall(blob)))
-    for ref in pr_data.get("closingIssuesReferences") or []:
-        if isinstance(ref, dict) and ref.get("url"):
-            if ref["url"] not in gh_issues:
-                gh_issues.append(ref["url"])
-
-    external_urls = []
-    for u in sorted(set(URL_RX.findall(body))):
-        if "/pull/" in u or "/issues/" in u:
-            continue
-        external_urls.append(u)
-
-    diff_specs = [s["path"] for s in sections if is_spec_file(s["path"])]
-    repo_specs = []
-    if clone and head_sha and SAFE_SHA.match(head_sha):
-        rc, out, _ = run_cmd(["git", "-C", clone, "ls-tree", "-r", "--name-only", head_sha])
-        if rc == 0:
-            for p in out.splitlines():
-                if is_spec_file(p) and p not in diff_specs:
-                    repo_specs.append(p)
-
-    body_lines = [ln for ln in body.splitlines() if ln.strip()]
-    desc_status = "empty" if not body_lines else ("one-line" if len(body_lines) <= 1 else "ok")
-
-    return {
-        "cli_specs": list(cli_specs or []),
-        "diff_specs": diff_specs,
-        "repo_specs": repo_specs[:20],
-        "tickets": tickets,
-        "github_issues": gh_issues,
-        "external_urls": external_urls[:15],
-        "pr_description": desc_status,
-    }
-
-
-def find_previous_findings(reviews_dir, owner, repo, number):
-    if not reviews_dir or not os.path.isdir(reviews_dir):
-        return None
-    prefix = f"{owner}-{repo}-{number}-"
-    matches = []
-    for name in os.listdir(reviews_dir):
-        if not name.startswith(prefix):
-            continue
-        fp = os.path.join(reviews_dir, name, "findings.json")
-        if os.path.isfile(fp):
-            try:
-                doc = json.load(open(fp, encoding="utf-8"))
-                has_next = isinstance(doc, dict) and "next_id" in doc
-                matches.append((has_next, os.path.getmtime(fp), fp))
-            except (OSError, ValueError):
-                continue
-    if not matches:
-        return None
-    matches.sort(key=lambda t: (t[0], t[1]), reverse=True)
-    return matches[0][2]
-
-
-def copy_snapshot_files(clone, head_sha, paths, out_root, owner=None, repo=None):
-    """Copy repo files at head_sha into out_root in parallel threads."""
-    copied = []
-    failed = []
-
-    def fetch_one(path):
-        if not is_safe_relpath(path) or is_denylisted(path):
-            return path, False
-        dst = os.path.join(out_root, path)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        if clone:
-            rc, content, _ = run_cmd(["git", "-C", clone, "show", f"{head_sha}:{path}"])
-        elif owner and repo:
-            rc, content, _ = run_cmd([
-                "gh", "api", f"repos/{owner}/{repo}/contents/{path}?ref={head_sha}",
-                "-H", "Accept: application/vnd.github.raw",
-            ])
-        else:
-            return path, False
-        if rc != 0:
-            return path, False
-        with open(dst, "w", encoding="utf-8", errors="replace") as fh:
-            fh.write(content)
-        return path, True
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-        for p, ok in ex.map(fetch_one, paths):
-            (copied if ok else failed).append(p)
-    return copied, failed
-
-
-def find_context_files(clone, head_sha, changed_paths, max_files, max_loc):
-    if not clone or not head_sha or not SAFE_SHA.match(head_sha):
-        return []
-    changed_set = set(changed_paths)
-    scores = {}
-
-    def grep_one(path):
-        base = os.path.splitext(os.path.basename(path))[0]
-        if len(base) < 3 or base in ("index", "main", "init", "__init__", "utils", "types"):
-            return []
-        found = []
-        rc, out, _ = run_cmd(["git", "-C", clone, "grep", "-l", "-F", base, head_sha])
-        if rc == 0:
-            for m in out.splitlines():
-                if ":" in m:
-                    m = m.split(":", 1)[1]
-                if m not in changed_set and is_safe_relpath(m) and not is_denylisted(m):
-                    found.append(m)
-        return found
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
-        for hits in ex.map(grep_one, changed_paths[:20]):
-            for h in hits:
-                scores[h] = scores.get(h, 0) + 1
-
-    ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
-    selected = []
-    total_loc = 0
-    for path, _ in ranked:
-        if len(selected) >= max_files:
-            break
-        rc, content, _ = run_cmd(["git", "-C", clone, "show", f"{head_sha}:{path}"])
-        if rc != 0:
-            continue
-        loc = content.count("\n") + 1
-        if total_loc + loc > max_loc and selected:
-            continue
-        selected.append((path, content))
-        total_loc += loc
-    return selected
 
 
 def shard_codebase_records(lane, records, max_files, max_loc):
@@ -765,7 +1024,6 @@ def shard_codebase_records(lane, records, max_files, max_loc):
 
     for top_dir in sorted(by_dir.keys()):
         group = by_dir[top_dir]
-        # Split an oversized single directory into bounded chunks
         if len(group) > max_files or sum(r["lines"] for r in group) > max_loc:
             flush()
             sub_recs, sub_lines = [], 0
@@ -839,6 +1097,8 @@ def slice_codebase_lanes(records, signals, max_shard_files=CODEBASE_SHARD_MAX_FI
     perf_prio = sig_sets.get("perf", set()) | sig_sets.get("data", set()) | sig_sets.get("ui", set())
     compat_prio = sig_sets.get("contract", set()) | sig_sets.get("data", set())
     rob_prio = sig_sets.get("async", set()) | sig_sets.get("data", set())
+    all_prio = sec_prio | perf_prio | compat_prio | rob_prio
+    critical_pool = order_priority(non_test_code + manifests_ci, all_prio) or specs_docs
 
     by_lane = {
         "adherence": specs_docs if specs_docs else non_test_code,
@@ -848,6 +1108,7 @@ def slice_codebase_lanes(records, signals, max_shard_files=CODEBASE_SHARD_MAX_FI
         "performance": order_priority(non_test_code, perf_prio),
         "compatibility": order_priority(non_test_code + manifests_ci, compat_prio) if (non_test_code or compat_prio) else [],
         "robustness": order_priority(non_test_code, rob_prio),
+        "critical-risk": critical_pool,
     }
     prio_by_lane = {
         "adherence": {r["path"] for r in specs_docs},
@@ -857,6 +1118,7 @@ def slice_codebase_lanes(records, signals, max_shard_files=CODEBASE_SHARD_MAX_FI
         "performance": perf_prio,
         "compatibility": compat_prio,
         "robustness": rob_prio,
+        "critical-risk": all_prio,
     }
 
     manifest = {}
@@ -865,7 +1127,7 @@ def slice_codebase_lanes(records, signals, max_shard_files=CODEBASE_SHARD_MAX_FI
         lines = sum(r["lines"] for r in recs)
         prio_set = prio_by_lane[lane]
         prio_files = [r["path"] for r in recs if r["path"] in prio_set]
-        shards = shard_codebase_records(lane, recs, max_shard_files, max_shard_loc)
+        shards = [] if lane == "critical-risk" else shard_codebase_records(lane, recs, max_shard_files, max_shard_loc)
         manifest[lane] = {
             "files": [r["path"] for r in recs],
             "priority_files": prio_files,
@@ -892,17 +1154,20 @@ def slice_codebase_lanes(records, signals, max_shard_files=CODEBASE_SHARD_MAX_FI
 def select_codebase_lanes(effort, lane_manifest, persona, rules_discovered, args):
     """Select lanes for exhaustive CODEBASE review (all 7 lanes at high, no micro-fold, shards expanded)."""
     if effort == "low":
-        total_code_lines = lane_manifest["code-quality"]["total_lines"]
-        if total_code_lines < 400 and not args.lanes:
-            return {
-                "selected": [{"lane": "critical-risk", "tier": "inline", "why": "low effort codebase under 400 lines"}],
-                "folded": [], "skipped": [], "inline_adherence": True,
-            }
-        tier = "standard" if args.no_tier else "fast"
-        return {
-            "selected": [{"lane": "critical-risk", "tier": tier, "why": "low effort codebase single lane"}],
-            "folded": [], "skipped": [], "inline_adherence": False,
-        }
+        cr_stats = lane_manifest.get("critical-risk") or {}
+        files_list = cr_stats.get("files_list") or "lanes/critical-risk.files.txt"
+        file_count = cr_stats.get("file_count", 0)
+        code_lines = cr_stats.get("total_lines")
+        if code_lines is None:
+            code_lines = lane_manifest["code-quality"]["total_lines"]
+        return _low_effort_plan(
+            code_lines,
+            "low effort codebase",
+            args.no_tier,
+            args.lanes,
+            files_list=files_list,
+            file_count=file_count,
+        )
 
     def expand(lane_name, why):
         stats = lane_manifest.get(lane_name) or {}
@@ -922,14 +1187,13 @@ def select_codebase_lanes(effort, lane_manifest, persona, rules_discovered, args
         }]
 
     if args.lanes:
-        req = [x.strip() for x in args.lanes.split(",") if x.strip()]
+        req = parse_lanes_arg(args.lanes)
         selected = []
         for ln in req:
             selected.extend(expand(ln, "explicit --lanes override"))
         return {"selected": selected, "folded": [], "skipped": [], "inline_adherence": False}
 
     skipped = []
-    folded = []
     if args.no_inherit:
         selected = expand("adherence", "verifies codebase against repo specs and documented contracts")
         if lane_manifest["conventions"]["file_count"] > 0 or rules_discovered or persona.get("has_house_rules") or persona.get("has_learned_prefs"):
@@ -949,7 +1213,6 @@ def select_codebase_lanes(effort, lane_manifest, persona, rules_discovered, args
         ("compatibility", "exhaustive API/schema contracts, versioning, and migration safety audit"),
         ("robustness", "exhaustive concurrency, transaction, async, and resource-lifecycle audit"),
     ]
-    # Preserve priority order; boost emphasized conditional lanes when medium cap applies
     core_lanes = lane_whys[:2]
     spec_lanes = lane_whys[2:]
     spec_lanes.sort(key=lambda item: (0 if (item[0] in emphasis or (item[0] == "compatibility" and "backward-compatibility" in emphasis)) else 1))
@@ -963,21 +1226,308 @@ def select_codebase_lanes(effort, lane_manifest, persona, rules_discovered, args
 
     cap = 3 if effort == "medium" else 7
     kept = candidates[:cap]
-    overflow = candidates[cap:]
     active_names = {c[0] for c in kept}
     fold_target = "conventions" if "conventions" in active_names else ("code-quality" if "code-quality" in active_names else None)
-    for ln, _ in overflow:
-        if fold_target and ln in ("security", "performance", "compatibility", "robustness"):
-            folded.append({"lane": ln, "into": fold_target, "why": f"{effort} effort lane cap ({cap})"})
-            skipped.append({"lane": ln, "why": f"folded into {fold_target} (cap {cap})"})
-        else:
-            skipped.append({"lane": ln, "why": f"exceeded cap ({cap})"})
+    folded, overflow_skipped = _apply_cap_overflow(
+        candidates[cap:], fold_target, f"{effort} effort lane cap ({cap})", f"cap {cap}", f"exceeded cap ({cap})"
+    )
+    skipped.extend(overflow_skipped)
 
     selected = []
     for ln, why in kept:
         selected.extend(expand(ln, why))
     return {"selected": selected, "folded": folded, "skipped": skipped, "inline_adherence": False}
 
+
+# ---------------------------------------------------------------------------
+# Intent hints and carry state preparation
+# ---------------------------------------------------------------------------
+
+def extract_intent_hints(pr_data, sections, clone, head_sha, cli_specs, owner=None, repo=None):
+    title = str(pr_data.get("title") or "")
+    body = str(pr_data.get("body") or "")
+    branch = str(pr_data.get("headRefName") or "")
+    commits = [
+        (c.get("messageHeadline") if isinstance(c, dict) else str(c))
+        for c in (pr_data.get("commits") or [])
+    ]
+    blob = "\n".join([title, body, branch] + commits)
+
+    tickets = []
+    for key in sorted(set(TRACKER_KEY_RX.findall(blob))):
+        if not any(key.startswith(pref) for pref in NON_TICKET_PREFIXES):
+            tickets.append(key)
+
+    gh_issues = []
+    seen_issues = set()
+
+    def add_issue(val):
+        if val and val not in seen_issues:
+            seen_issues.add(val)
+            gh_issues.append(val)
+
+    for url in sorted(set(GH_ISSUE_URL_RX.findall(blob))):
+        add_issue(url)
+    for ref in pr_data.get("closingIssuesReferences") or []:
+        if isinstance(ref, dict) and ref.get("url"):
+            add_issue(ref["url"])
+    for o, n in sorted(set(GH_ISSUE_SHORTHAND_RX.findall(blob))):
+        if int(n) > 0:
+            add_issue(f"https://github.com/{o}/issues/{n}")
+    for n in sorted(set(GH_ISSUE_LOCAL_RX.findall(blob)), key=int):
+        if int(n) <= 0:
+            continue
+        if owner and repo and owner != "local":
+            add_issue(f"https://github.com/{owner}/{repo}/issues/{n}")
+        else:
+            add_issue(f"#{n}")
+
+    external_urls = []
+    for raw_u in sorted(set(URL_RX.findall(blob))):
+        u = raw_u.rstrip(".,;:!?")
+        if "/pull/" in u or "/issues/" in u:
+            continue
+        if u and u not in external_urls:
+            external_urls.append(u)
+
+    diff_specs = [s["path"] for s in sections if s["status"] != "deleted" and is_spec_file(s["path"])]
+    repo_specs = []
+    if clone and head_sha and SAFE_SHA.match(head_sha):
+        rc, out, _ = run_cmd(["git", "-C", clone, "ls-tree", "-r", "-z", "--name-only", head_sha])
+        if rc == 0:
+            for p in out.split("\x00"):
+                if p and is_spec_file(p) and p not in diff_specs:
+                    repo_specs.append(p)
+
+    body_lines = [ln for ln in body.splitlines() if ln.strip()]
+    desc_status = "empty" if not body_lines else ("one-line" if len(body_lines) <= 1 else "ok")
+
+    return {
+        "cli_specs": list(cli_specs or []),
+        "diff_specs": diff_specs,
+        "repo_specs": repo_specs[:20],
+        "tickets": tickets,
+        "github_issues": gh_issues,
+        "external_urls": external_urls[:15],
+        "pr_description": desc_status,
+    }
+
+
+def _text_mentions_spec(pr_data):
+    blob = " ".join([
+        str(pr_data.get("title") or ""),
+        str(pr_data.get("body") or ""),
+        str(pr_data.get("headRefName") or ""),
+    ])
+    for tok in re.split(r"\s+", blob):
+        cleaned = tok.strip("'\"`()[]{}.,;:!?<>")
+        if cleaned and ("/" in cleaned or "." in cleaned) and is_spec_file(cleaned):
+            return True
+    return False
+
+
+def find_previous_findings(reviews_dir, owner, repo, number, extra_dirs=None):
+    dirs = []
+    if reviews_dir:
+        dirs.append(reviews_dir)
+    if extra_dirs:
+        dirs.extend(extra_dirs)
+    elif reviews_dir and os.path.abspath(reviews_dir) == os.path.abspath(DEFAULT_REVIEWS_DIR):
+        dirs.append(LEGACY_REVIEWS_DIR)
+
+    prefix = f"{owner}-{repo}-{number}-"
+    matches = []
+    seen_dirs = set()
+    for d in dirs:
+        if not d:
+            continue
+        ad = os.path.abspath(d)
+        if ad in seen_dirs or not os.path.isdir(ad):
+            continue
+        seen_dirs.add(ad)
+        for name in os.listdir(ad):
+            if not name.startswith(prefix):
+                continue
+            fp = os.path.join(ad, name, "findings.json")
+            if os.path.isfile(fp):
+                try:
+                    with open(fp, encoding="utf-8") as fh:
+                        doc = json.load(fh)
+                    rank = 2 if (isinstance(doc, dict) and "next_id" in doc) else 1
+                    matches.append((rank, os.path.getmtime(fp), fp))
+                except ValueError:
+                    matches.append((0, os.path.getmtime(fp), fp))
+                except OSError:
+                    continue
+    if not matches:
+        return None
+    matches.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    return matches[0][2]
+
+
+def _path_in_scope(path, scope_path):
+    if not scope_path or scope_path == ".":
+        return True
+    return path == scope_path or path.startswith(scope_path + "/")
+
+
+def prepare_carry_state(prev_path, bundle_dir, coverage_limits, scope_path=None):
+    """Load previous findings.json safely, write bundle carry files, and return (carry_info, state)."""
+    carry_info = {"enabled": False, "delta_mode": False, "previous_path": None, "history_rewritten": False}
+    if scope_path is not None:
+        carry_info["scope_path"] = scope_path or "."
+    if not prev_path:
+        return carry_info, None
+
+    prev_scope = None
+    try:
+        with open(prev_path, encoding="utf-8") as fh:
+            raw_prev = json.load(fh)
+        if isinstance(raw_prev, dict):
+            prev_scope = raw_prev.get("scope_path") or (
+                raw_prev.get("codebase", {}).get("scope_path") if isinstance(raw_prev.get("codebase"), dict) else None
+            )
+        state, _id_map, warnings = carry_findings.load_previous(prev_path)
+    except (carry_findings.BadInput, OSError, ValueError) as exc:
+        msg = f"carry skipped: {exc}"
+        coverage_limits.append(msg)
+        carry_info["warnings"] = [msg]
+        return carry_info, None
+
+    if scope_path and scope_path != ".":
+        kept_findings = []
+        filtered_out = 0
+        for f in state["findings"]:
+            fpath, _ = carry_findings.file_and_lines(f)
+            if fpath and _path_in_scope(fpath, scope_path):
+                kept_findings.append(f)
+            else:
+                filtered_out += 1
+        if filtered_out or (prev_scope and prev_scope != scope_path):
+            warnings.append(
+                f"codebase carry scoped to '{scope_path}' (previous scope: {prev_scope or 'unknown'}; "
+                f"filtered {filtered_out} out-of-scope finding(s))"
+            )
+        state["findings"] = kept_findings
+
+    declines = [carry_findings.decline_row(f) for f in state["findings"] if f["status"] == "declined"]
+    open_ = [
+        carry_findings.open_row(f)
+        for f in state["findings"]
+        if f["status"] == "todo" and f["severity"] in carry_findings.BLOCKING
+    ]
+    carry_findings.write_json(os.path.join(bundle_dir, "previous.json"), state)
+    carry_findings.write_json(os.path.join(bundle_dir, "declines.json"), declines)
+    carry_findings.write_json(os.path.join(bundle_dir, "open.json"), open_)
+    carry_info.update({
+        "enabled": True,
+        "previous_path": prev_path,
+        "last_sha": state.get("last_sha"),
+        "declines_count": len(declines),
+        "open_count": len(open_),
+        "warnings": warnings,
+    })
+    return carry_info, state
+
+
+def _apply_delta_diff(clone, target_mode, owner, repo, head_sha, carry_state, carry_info, full_pr_diff, bundle_dir, coverage_limits, since_last):
+    """Attempt incremental delta diff from previous last_sha; return updated diff_text."""
+    last_sha = carry_state.get("last_sha")
+    if not (last_sha and SAFE_SHA.match(last_sha)):
+        return full_pr_diff
+    if last_sha == head_sha:
+        if since_last:
+            carry_info["warnings"].append("already reviewed at head_sha; running full PR diff")
+        return full_pr_diff
+    if not clone:
+        coverage_limits.append("no clone — delta diff skipped, full PR diff reviewed")
+        return full_pr_diff
+
+    rc_ce, _, _ = run_cmd(["git", "-C", clone, "cat-file", "-e", f"{last_sha}^{{commit}}"])
+    if rc_ce != 0 and target_mode == "pr":
+        run_cmd(["git", "-C", clone, "fetch", "-q", "origin", last_sha])
+        rc_ce, _, _ = run_cmd(["git", "-C", clone, "cat-file", "-e", f"{last_sha}^{{commit}}"])
+    if rc_ce == 0:
+        rc_anc, _, _ = run_cmd(["git", "-C", clone, "merge-base", "--is-ancestor", last_sha, head_sha])
+        if rc_anc == 0:
+            rc_dd, out_dd, _ = run_cmd(["git", "-C", clone, "diff", "-M", f"{last_sha}..{head_sha}"])
+            if rc_dd == 0:
+                with open(os.path.join(bundle_dir, "pr.diff.patch"), "w", encoding="utf-8") as fh:
+                    fh.write(full_pr_diff)
+                carry_info["delta_mode"] = True
+                return out_dd
+        elif rc_anc == 1:
+            carry_info["history_rewritten"] = True
+        else:
+            coverage_limits.append("delta check failed — full PR diff reviewed")
+    elif target_mode == "pr":
+        rc_cmp, out_cmp, _ = run_cmd([
+            "gh", "api", f"repos/{owner}/{repo}/compare/{last_sha}...{head_sha}", "--jq", ".status",
+        ])
+        if rc_cmp == 0 and out_cmp.strip() == "diverged":
+            carry_info["history_rewritten"] = True
+        else:
+            coverage_limits.append("previous commit unavailable locally — full PR diff reviewed")
+    else:
+        coverage_limits.append("previous commit unavailable locally — full branch diff reviewed")
+    return full_pr_diff
+
+
+def _copy_changed_rules(sections, bundle_dir, effort, clone, owner, repo, base_sha, coverage_limits):
+    """Write rules-changed.txt and copy up to 30 base rule files at high/medium."""
+    changed_rules = [s for s in sections if is_rule_file(s["path"])]
+    if not changed_rules:
+        return []
+    base_root = os.path.join(bundle_dir, "base")
+    rule_records = []
+    copied_count = 0
+    for rs in changed_rules:
+        p = rs["path"]
+        st = rs["status"]
+        src_p = rs["old_path"] if st == "renamed" else p
+        if st == "added":
+            bstate = "none"
+        elif effort in ("low", "skim"):
+            bstate = "skipped"
+        elif (
+            copied_count >= 30
+            or base_sha == "unavailable"
+            or not SAFE_SHA.match(base_sha)
+            or not is_safe_relpath(p)
+            or not is_safe_relpath(src_p)
+        ):
+            bstate = "unavailable"
+        else:
+            copied_count += 1
+            if clone:
+                rc_b, content_b, _ = run_cmd(["git", "-C", clone, "show", f"{base_sha}:{src_p}"])
+            else:
+                qsrc = urllib.parse.quote(src_p, safe="/")
+                rc_b, content_b, _ = run_cmd([
+                    "gh", "api", f"repos/{owner}/{repo}/contents/{qsrc}?ref={base_sha}",
+                    "-H", "Accept: application/vnd.github.raw",
+                ])
+            if rc_b == 0:
+                dst = os.path.join(base_root, p)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                with open(dst, "w", encoding="utf-8", errors="replace") as fh:
+                    fh.write(content_b)
+                bstate = "ok"
+            else:
+                bstate = "unavailable"
+        rule_records.append({"status": st, "path": p, "base_state": bstate})
+    with open(os.path.join(bundle_dir, "rules-changed.txt"), "w", encoding="utf-8") as fh:
+        for r in rule_records:
+            fh.write(f"{r['status']}\t{r['path']}\t{r['base_state']}\n")
+    unavail = [r["path"] for r in rule_records if r["base_state"] == "unavailable"]
+    if unavail:
+        coverage_limits.append(f"base rules unavailable for {', '.join(unavail)}; head versions used")
+    return rule_records
+
+
+# ---------------------------------------------------------------------------
+# Codebase and PR bundle builders
+# ---------------------------------------------------------------------------
 
 def build_codebase(args, cwd):
     """Build exhaustive CODEBASE review bundle (file-map.json, signals, per-lane file lists & shards)."""
@@ -992,6 +1542,8 @@ def build_codebase(args, cwd):
         if PR_URL_RX.match(t) or PR_SHORTHAND_RX.match(t) or PR_NUM_RX.match(t):
             raise ValueError("PR target is not allowed with level=CODEBASE; pass a repo-relative path or omit target")
         cleaned = t.strip("/")
+        if cleaned.startswith("./"):
+            cleaned = cleaned[2:]
         if cleaned and cleaned != ".":
             if not is_safe_relpath(cleaned):
                 raise ValueError(f"invalid codebase scope path: {t}")
@@ -1008,14 +1560,24 @@ def build_codebase(args, cwd):
         rc_br, out_br, _ = run_cmd(["git", "-C", clone, "rev-parse", "--abbrev-ref", "HEAD"])
         head_ref = out_br.strip() if rc_br == 0 else "HEAD"
         rc_u, url, _ = run_cmd(["git", "-C", clone, "remote", "get-url", "origin"])
-        rm = re.search(r"github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?$", url.strip()) if rc_u == 0 else None
-        owner = rm.group(1) if rm else "local"
-        repo = rm.group(2) if rm else os.path.basename(os.path.abspath(clone))
+        ro, rr = _parse_github_remote(url) if rc_u == 0 else (None, None)
+        owner = ro or "local"
+        repo = rr or os.path.basename(os.path.abspath(clone))
 
-        rc_ls, out_ls, err_ls = run_cmd(["git", "-C", clone, "ls-tree", "-r", "--name-only", head_sha])
+        rc_ls, out_ls, err_ls = run_cmd(["git", "-C", clone, "ls-tree", "-r", "-z", head_sha])
         if rc_ls != 0:
             raise RuntimeError(f"git ls-tree failed: {err_ls.strip()}")
-        raw_paths = [p for p in out_ls.splitlines() if p.strip()]
+        raw_paths = []
+        for rec in out_ls.split("\x00"):
+            if not rec or "\t" not in rec:
+                continue
+            meta, p = rec.split("\t", 1)
+            parts = meta.split()
+            mode = parts[0] if parts else ""
+            if mode in ("120000", "160000"):
+                continue
+            if p:
+                raw_paths.append(p)
     else:
         head_sha = "working-tree"
         sha7 = "worktree"
@@ -1024,22 +1586,34 @@ def build_codebase(args, cwd):
         repo = os.path.basename(cwd)
         coverage_limits.append("not a git repository — working tree scanned directly")
         raw_paths = []
+        real_cwd = os.path.realpath(cwd)
         for root, dirs, files in os.walk(cwd):
-            dirs[:] = sorted(d for d in dirs if d not in WALK_SKIP_DIRS)
+            dirs[:] = sorted(
+                d for d in dirs
+                if d not in WALK_SKIP_DIRS and not os.path.islink(os.path.join(root, d))
+            )
             for fn in sorted(files):
-                rel = os.path.relpath(os.path.join(root, fn), cwd).replace(os.sep, "/")
+                full = os.path.join(root, fn)
+                if os.path.islink(full):
+                    continue
+                real_f = os.path.realpath(full)
+                if not (real_f == real_cwd or real_f.startswith(real_cwd + os.sep)):
+                    continue
+                rel = os.path.relpath(full, cwd).replace(os.sep, "/")
                 raw_paths.append(rel)
 
     if scope_path:
-        raw_paths = [p for p in raw_paths if p == scope_path or p.startswith(scope_path + "/")]
+        raw_paths = [p for p in raw_paths if _path_in_scope(p, scope_path)]
+        if not raw_paths:
+            raise ValueError(f"codebase scope path matched no files: {scope_path}")
 
     candidate_paths = []
     for p in sorted(set(raw_paths)):
-        if not is_safe_relpath(p) or is_denylisted(p):
-            continue
-        if is_generated_or_locale(p):
+        if not is_safe_relpath(p) or is_denylisted(p) or is_generated_or_locale(p):
             continue
         candidate_paths.append(p)
+
+    real_cwd = os.path.realpath(cwd)
 
     def inspect_one(path):
         if clone:
@@ -1047,16 +1621,26 @@ def build_codebase(args, cwd):
             if rc != 0:
                 return None
         else:
+            full = os.path.join(cwd, path)
+            if os.path.islink(full):
+                return None
+            real_f = os.path.realpath(full)
+            if not (real_f == real_cwd or real_f.startswith(real_cwd + os.sep)):
+                return None
             try:
-                with open(os.path.join(cwd, path), encoding="utf-8", errors="replace") as fh:
+                with open(full, encoding="utf-8", errors="replace") as fh:
                     content = fh.read()
             except OSError:
                 return None
         if "\x00" in content[:8192]:
             return None
         lines = len(content.splitlines())
-        haystack = path + "\n" + content[:CODEBASE_SCAN_MAX_BYTES]
-        matched_sigs = [sig for sig, rx in SIGNAL_RULES.items() if rx.search(haystack)]
+        is_doc = is_doc_or_asset(path)
+        if is_doc and not is_lock_or_manifest(path):
+            matched_sigs = []
+        else:
+            haystack = path + "\n" + content[:CODEBASE_SCAN_MAX_BYTES]
+            matched_sigs = [sig for sig, rx in SIGNAL_RULES.items() if rx.search(haystack)]
         return {
             "path": path,
             "lines": lines,
@@ -1065,7 +1649,7 @@ def build_codebase(args, cwd):
             "is_test": is_test_path(path),
             "is_rule": is_rule_file(path),
             "is_spec": is_spec_file(path),
-            "is_doc": is_doc_or_asset(path),
+            "is_doc": is_doc,
             "is_gen": is_generated_or_locale(path),
             "signals": matched_sigs,
         }
@@ -1076,28 +1660,10 @@ def build_codebase(args, cwd):
             if res is not None:
                 records.append(res)
 
-    if args.bundle_dir:
-        bundle_dir = os.path.abspath(args.bundle_dir)
-    else:
-        job_dir = os.environ.get("CLAUDE_JOB_DIR")
-        base_tmp = os.path.join(job_dir, "tmp") if job_dir else tempfile.gettempdir()
-        bundle_dir = os.path.join(base_tmp, "review", f"{owner}-{repo}-codebase-{sha7}")
-    os.makedirs(bundle_dir, exist_ok=True)
+    bundle_dir = _resolve_bundle_dir(args.bundle_dir, owner, repo, "codebase", sha7)
 
-    # Carry check against previous codebase reviews (never delta_mode)
-    carry_info = {"enabled": False, "delta_mode": False, "previous_path": None, "history_rewritten": False}
     prev_path = None if args.fresh else find_previous_findings(args.reviews_dir, owner, repo, "codebase")
-    if prev_path:
-        state, _, warnings = carry_findings.load_previous(prev_path)
-        declines = [carry_findings.decline_row(f) for f in state["findings"] if f["status"] == "declined"]
-        open_ = [carry_findings.open_row(f) for f in state["findings"] if f["status"] == "todo" and f["severity"] in carry_findings.BLOCKING]
-        carry_findings.write_json(os.path.join(bundle_dir, "previous.json"), state)
-        carry_findings.write_json(os.path.join(bundle_dir, "declines.json"), declines)
-        carry_findings.write_json(os.path.join(bundle_dir, "open.json"), open_)
-        carry_info.update({
-            "enabled": True, "previous_path": prev_path, "last_sha": state.get("last_sha"),
-            "declines_count": len(declines), "open_count": len(open_), "warnings": warnings,
-        })
+    carry_info, _ = prepare_carry_state(prev_path, bundle_dir, coverage_limits, scope_path=scope_path or ".")
 
     file_map = {r["path"]: {"lines": r["lines"], "lang": r["lang"]} for r in records}
     with open(os.path.join(bundle_dir, "file-map.json"), "w", encoding="utf-8") as fh:
@@ -1139,8 +1705,8 @@ def build_codebase(args, cwd):
     effort = "high" if args.effort == "auto" else args.effort
     effort_reason = "exhaustive codebase review (auto -> high)" if args.effort == "auto" else "explicit flag"
 
-    max_sf = getattr(args, "shard_max_files", CODEBASE_SHARD_MAX_FILES) or CODEBASE_SHARD_MAX_FILES
-    max_sl = getattr(args, "shard_max_loc", CODEBASE_SHARD_MAX_LOC) or CODEBASE_SHARD_MAX_LOC
+    max_sf = args.shard_max_files
+    max_sl = args.shard_max_loc
     lane_manifest, lane_file_lists = slice_codebase_lanes(records, signals, max_sf, max_sl)
     lanes_dir = os.path.join(bundle_dir, "lanes")
     os.makedirs(lanes_dir, exist_ok=True)
@@ -1186,11 +1752,7 @@ def build_codebase(args, cwd):
             "lockfile_only": False, "in_skim_profile": False,
         },
         "effort": {"resolved": effort, "reason": effort_reason, "small_pr": False},
-        "persona": {
-            "status": persona["status"], "refreshed": persona["refreshed"],
-            "memory": persona["memory"], "voice": persona["voice"],
-            "has_rules": bool(persona["has_house_rules"] or persona["has_learned_prefs"]),
-        },
+        "persona": _persona_summary(persona),
         "signals": signals,
         "lane_plan": lane_plan,
         "lane_slices": {
@@ -1216,6 +1778,12 @@ def build_codebase(args, cwd):
 
 def build(args):
     cwd = os.path.abspath(args.cwd)
+    if not os.path.isdir(cwd):
+        raise ValueError(f"--cwd directory does not exist: {cwd}")
+    if args.shard_max_files < 1 or args.shard_max_loc < 1:
+        raise ValueError("--shard-max-files and --shard-max-loc must be >= 1")
+    parse_lanes_arg(args.lanes)
+
     level = str(getattr(args, "level", None) or "PR").upper()
     if level == "CODEBASE":
         return build_codebase(args, cwd)
@@ -1235,7 +1803,7 @@ def build(args):
         if rc == 0 and out.strip():
             try:
                 view = json.loads(out)
-                if view.get("url"):
+                if isinstance(view, dict) and str(view.get("state") or "").upper() == "OPEN" and view.get("url"):
                     mode, owner, repo, number, pr_url = parse_target(view["url"], cwd)
                     clone = find_clone(cwd, owner, repo)
             except ValueError:
@@ -1255,7 +1823,13 @@ def build(args):
             rc_me, out_me, _ = f_me.result()
         if rc_pr != 0:
             raise RuntimeError(f"gh pr view failed: {err_pr.strip()}")
-        pr_data = json.loads(out_pr)
+        try:
+            pr_data = json.loads(out_pr)
+        except ValueError as exc:
+            raise RuntimeError(f"invalid JSON from gh pr view: {exc}") from exc
+        if not isinstance(pr_data, dict):
+            raise RuntimeError("unexpected non-object JSON from gh pr view")
+
         me_login = out_me.strip() if rc_me == 0 else ""
         pr_author = (pr_data.get("author") or {}).get("login") or ""
         author_is_me = bool(me_login and pr_author and me_login == pr_author)
@@ -1268,8 +1842,9 @@ def build(args):
             }
 
         head_sha = str(pr_data.get("headRefOid") or "")
+        if not SAFE_SHA.match(head_sha):
+            raise RuntimeError("invalid headRefOid SHA from gh pr view")
         base_ref_oid = str(pr_data.get("baseRefOid") or "")
-        base_ref = str(pr_data.get("baseRefName") or "")
 
         # Parallel network + git fetches
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
@@ -1293,46 +1868,40 @@ def build(args):
             diff_text = out_d
 
             rc_ic, out_ic, _ = f_ic.result()
-            if rc_ic == 0 and out_ic.strip():
-                for chunk in out_ic.splitlines():
-                    try:
-                        parsed = json.loads(chunk)
-                        if isinstance(parsed, list):
-                            inline_comments.extend(parsed)
-                    except ValueError:
-                        pass
-                if not inline_comments:
-                    try:
-                        parsed = json.loads(out_ic)
-                        if isinstance(parsed, list):
-                            inline_comments = parsed
-                    except ValueError:
-                        pass
+            if rc_ic == 0:
+                inline_comments, ic_ok = parse_paginated_json_list(out_ic)
+                if not ic_ok:
+                    coverage_limits.append("existing inline comments unparseable")
+            else:
+                coverage_limits.append("existing inline comments unavailable")
 
             rc_rv, out_rv, _ = f_rc.result()
-            if rc_rv == 0 and out_rv.strip():
-                try:
-                    parsed = json.loads(out_rv)
-                    if isinstance(parsed, list):
-                        review_comments = parsed
-                except ValueError:
-                    pass
+            if rc_rv == 0:
+                review_comments, rv_ok = parse_paginated_json_list(out_rv)
+                if not rv_ok:
+                    coverage_limits.append("existing PR reviews unparseable")
+            else:
+                coverage_limits.append("existing PR reviews unavailable")
 
             if f_fetch_head:
                 f_fetch_head.result()
+                rc_ce, _, _ = run_cmd(["git", "-C", clone, "cat-file", "-e", f"{head_sha}^{{commit}}"])
+                if rc_ce != 0:
+                    coverage_limits.append("head commit not in local clone — GitHub API fallback used")
+                    clone = None
             if f_fetch_base:
                 f_fetch_base.result()
 
         # Resolve merge base
         base_sha = "unavailable"
-        if clone and SAFE_SHA.match(head_sha) and SAFE_SHA.match(base_ref_oid):
+        if clone and SAFE_SHA.match(base_ref_oid):
             rc_mb, out_mb, _ = run_cmd(["git", "-C", clone, "merge-base", base_ref_oid, head_sha])
             if rc_mb == 0 and SAFE_SHA.match(out_mb.strip()):
                 base_sha = out_mb.strip()
             else:
                 base_sha = base_ref_oid
                 coverage_limits.append("base is the branch tip, not the merge base")
-        elif SAFE_SHA.match(head_sha) and SAFE_SHA.match(base_ref_oid):
+        elif SAFE_SHA.match(base_ref_oid):
             rc_mb, out_mb, _ = run_cmd([
                 "gh", "api", f"repos/{owner}/{repo}/compare/{base_ref_oid}...{head_sha}",
                 "--jq", ".merge_base_commit.sha",
@@ -1354,7 +1923,6 @@ def build(args):
         rc_br, out_br, _ = run_cmd(["git", "-C", clone, "rev-parse", "--abbrev-ref", "HEAD"])
         head_ref = out_br.strip() if rc_br == 0 else "HEAD"
 
-        # Find default base ref
         base_ref = None
         base_sha = "unavailable"
         for cand in ("origin/HEAD", "origin/main", "origin/master", "main", "master"):
@@ -1375,7 +1943,7 @@ def build(args):
             else:
                 raise RuntimeError("cannot determine base commit for local branch diff")
 
-        rc_d, out_d, err_d = run_cmd(["git", "-C", clone, "diff", f"{base_sha}..{head_sha}"])
+        rc_d, out_d, err_d = run_cmd(["git", "-C", clone, "diff", "-M", f"{base_sha}..{head_sha}"])
         if rc_d != 0:
             raise RuntimeError(f"git diff failed: {err_d.strip()}")
         diff_text = out_d
@@ -1396,45 +1964,22 @@ def build(args):
         }
 
     sha7 = head_sha[:7]
-    if args.bundle_dir:
-        bundle_dir = os.path.abspath(args.bundle_dir)
-    else:
-        job_dir = os.environ.get("CLAUDE_JOB_DIR")
-        base_tmp = os.path.join(job_dir, "tmp") if job_dir else tempfile.gettempdir()
-        bundle_dir = os.path.join(base_tmp, "review", f"{owner}-{repo}-{number}-{sha7}")
-    os.makedirs(bundle_dir, exist_ok=True)
+    bundle_dir = _resolve_bundle_dir(args.bundle_dir, owner, repo, number, sha7)
 
     # Carry & delta check
-    carry_info = {"enabled": False, "delta_mode": False, "previous_path": None, "history_rewritten": False}
     prev_path = None if args.fresh else find_previous_findings(args.reviews_dir, owner, repo, number)
     full_pr_diff = diff_text
-    if prev_path:
-        state, id_map, warnings = carry_findings.load_previous(prev_path)
-        declines = [carry_findings.decline_row(f) for f in state["findings"] if f["status"] == "declined"]
-        open_ = [carry_findings.open_row(f) for f in state["findings"] if f["status"] == "todo" and f["severity"] in carry_findings.BLOCKING]
-        carry_findings.write_json(os.path.join(bundle_dir, "previous.json"), state)
-        carry_findings.write_json(os.path.join(bundle_dir, "declines.json"), declines)
-        carry_findings.write_json(os.path.join(bundle_dir, "open.json"), open_)
-        carry_info.update({
-            "enabled": True, "previous_path": prev_path, "last_sha": state.get("last_sha"),
-            "declines_count": len(declines), "open_count": len(open_), "warnings": warnings,
-        })
-        last_sha = state.get("last_sha")
-        if clone and last_sha and SAFE_SHA.match(last_sha) and (last_sha != head_sha or args.since_last):
-            rc_anc, _, _ = run_cmd(["git", "-C", clone, "merge-base", "--is-ancestor", last_sha, head_sha])
-            if rc_anc == 0:
-                rc_dd, out_dd, _ = run_cmd(["git", "-C", clone, "diff", f"{last_sha}..{head_sha}"])
-                if rc_dd == 0:
-                    with open(os.path.join(bundle_dir, "pr.diff.patch"), "w", encoding="utf-8") as fh:
-                        fh.write(full_pr_diff)
-                    diff_text = out_dd
-                    carry_info["delta_mode"] = True
-            else:
-                carry_info["history_rewritten"] = True
+    carry_info, carry_state = prepare_carry_state(prev_path, bundle_dir, coverage_limits)
+    if carry_state is not None:
+        diff_text = _apply_delta_diff(
+            clone, target_mode, owner, repo, head_sha,
+            carry_state, carry_info, full_pr_diff, bundle_dir, coverage_limits, args.since_last,
+        )
 
     # Write pr.json, diff.patch, existing-comments.json, diff-map.json
+    clean_pr_data = sanitize_pr_data(pr_data)
     with open(os.path.join(bundle_dir, "pr.json"), "w", encoding="utf-8") as fh:
-        json.dump(pr_data, fh, indent=2, ensure_ascii=False)
+        json.dump(clean_pr_data, fh, indent=2, ensure_ascii=False)
     with open(os.path.join(bundle_dir, "diff.patch"), "w", encoding="utf-8") as fh:
         fh.write(diff_text)
     with open(os.path.join(bundle_dir, "existing-comments.json"), "w", encoding="utf-8") as fh:
@@ -1454,25 +1999,33 @@ def build(args):
         for sig, paths in sorted(signals.items()):
             fh.write(f"{sig}: {', '.join(paths)}\n")
 
-    intent_hints = extract_intent_hints(pr_data, sections, clone, head_sha, args.spec)
+    intent_hints = extract_intent_hints(clean_pr_data, sections, clone, head_sha, args.spec, owner=owner, repo=repo)
     total_adds = sum(s["adds"] for s in sections)
     total_dels = sum(s["dels"] for s in sections)
     core_lines = sum(
         s["adds"] + s["dels"] for s in sections
-        if not is_test_path(s["path"]) and not is_generated_or_locale(s["path"]) and not is_lock_or_manifest(s["path"])
+        if not is_test_path(s["path"])
+        and not is_generated_or_locale(s["path"])
+        and not is_lockfile(s["path"])
+        and not is_secret_or_vendor(s["path"])
     )
     skim_lines = sum(
         s["adds"] + s["dels"] for s in sections
-        if not is_generated_or_locale(s["path"]) and not is_lock_or_manifest(s["path"])
+        if not is_generated_or_locale(s["path"]) and not is_lockfile(s["path"])
     )
+    lock_lines = sum(s["adds"] + s["dels"] for s in sections if is_lockfile(s["path"]))
     lockfile_only = bool(sections) and all(is_lock_or_manifest(s["path"]) for s in sections)
-    author_login = str((pr_data.get("author") or {}).get("login") or "").lower()
-    is_bot = any(b in author_login for b in ("dependabot", "renovate", "[bot]", "bot")) or bool((pr_data.get("author") or {}).get("is_bot"))
+
+    author_obj = clean_pr_data.get("author") or {}
+    is_bot = is_bot_author(author_obj)
+
     spec_count = len(intent_hints["cli_specs"]) + len(intent_hints["diff_specs"])
+    text_names_spec = _text_mentions_spec(clean_pr_data)
     in_skim_profile = (
         skim_lines < 100
         and len(sections) <= 4
         and spec_count == 0
+        and not text_names_spec
         and not any(signals.get(k) for k in ("auth", "data", "contract"))
     )
 
@@ -1494,58 +2047,25 @@ def build(args):
         effort_reason = f"{core_lines} core lines, {spec_count} spec(s)"
 
     # Rule files and base/ copies
-    changed_rules = [s for s in sections if is_rule_file(s["path"])]
-    rule_records = []
-    if changed_rules:
-        base_root = os.path.join(bundle_dir, "base")
-        for idx, rs in enumerate(changed_rules):
-            p = rs["path"]
-            st = rs["status"]
-            if st == "added":
-                bstate = "none"
-            elif effort in ("low", "skim"):
-                bstate = "skipped"
-            elif idx >= 30 or base_sha == "unavailable" or not is_safe_relpath(p):
-                bstate = "unavailable"
-            else:
-                src_p = rs["old_path"] if st == "renamed" else p
-                if clone:
-                    rc_b, content_b, _ = run_cmd(["git", "-C", clone, "show", f"{base_sha}:{src_p}"])
-                else:
-                    rc_b, content_b, _ = run_cmd([
-                        "gh", "api", f"repos/{owner}/{repo}/contents/{src_p}?ref={base_sha}",
-                        "-H", "Accept: application/vnd.github.raw",
-                    ])
-                if rc_b == 0:
-                    dst = os.path.join(base_root, p)
-                    os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    with open(dst, "w", encoding="utf-8", errors="replace") as fh:
-                        fh.write(content_b)
-                    bstate = "ok"
-                else:
-                    bstate = "unavailable"
-            rule_records.append({"status": st, "path": p, "base_state": bstate})
-        with open(os.path.join(bundle_dir, "rules-changed.txt"), "w", encoding="utf-8") as fh:
-            for r in rule_records:
-                fh.write(f"{r['status']}\t{r['path']}\t{r['base_state']}\n")
-        unavail = [r["path"] for r in rule_records if r["base_state"] == "unavailable"]
-        if unavail:
-            coverage_limits.append(f"base rules unavailable for {', '.join(unavail)}; head versions used")
+    rule_records = _copy_changed_rules(sections, bundle_dir, effort, clone, owner, repo, base_sha, coverage_limits)
 
     # Reduced diffs for low / skim
     if effort == "low":
         core_patch = "".join(
             s["text"] for s in sections
-            if not is_test_path(s["path"]) and not is_generated_or_locale(s["path"]) and not is_lock_or_manifest(s["path"])
+            if not is_test_path(s["path"])
+            and not is_generated_or_locale(s["path"])
+            and not is_lockfile(s["path"])
+            and not is_secret_or_vendor(s["path"])
         )
         with open(os.path.join(bundle_dir, "diff.core.patch"), "w", encoding="utf-8") as fh:
             fh.write(core_patch)
     elif effort == "skim":
         skim_patch = "".join(
             s["text"] for s in sections
-            if not is_generated_or_locale(s["path"]) and not is_lock_or_manifest(s["path"])
+            if not is_generated_or_locale(s["path"]) and not is_lockfile(s["path"]) and not is_secret_or_vendor(s["path"])
         )
-        lock_patch = "".join(s["text"] for s in sections if is_lock_or_manifest(s["path"]))
+        lock_patch = "".join(s["text"] for s in sections if is_lockfile(s["path"]))
         with open(os.path.join(bundle_dir, "diff.skim.patch"), "w", encoding="utf-8") as fh:
             fh.write(skim_patch)
         with open(os.path.join(bundle_dir, "lock.patch"), "w", encoding="utf-8") as fh:
@@ -1567,7 +2087,10 @@ def build(args):
             copy_targets = [s["path"] for s in non_deleted]
         head_root = os.path.join(bundle_dir, "head")
         os.makedirs(head_root, exist_ok=True)
-        copy_snapshot_files(clone, head_sha, copy_targets, head_root, owner, repo)
+        _, failed_copies = copy_snapshot_files(clone, head_sha, copy_targets, head_root, owner, repo)
+        real_failed = [p for p in failed_copies if is_safe_relpath(p) and not is_denylisted(p)]
+        if real_failed:
+            coverage_limits.append(f"head snapshot unavailable for {len(real_failed)} file(s)")
 
         max_ctx_files = 20 if effort == "high" else 10
         max_ctx_loc = 3000 if effort == "high" else 1500
@@ -1602,7 +2125,7 @@ def build(args):
             and not any(signals.get(k) for k in ("auth", "data", "contract"))
         )
     )
-    lane_plan = select_lanes(effort, signals, lane_manifest, persona, rule_records, args, small_pr)
+    lane_plan = select_lanes(effort, signals, lane_manifest, persona, rule_records, args, small_pr, core_lines=core_lines)
 
     summary = {
         "level": "PR",
@@ -1612,23 +2135,20 @@ def build(args):
         "clone": clone,
         "pr": {
             "owner": owner, "repo": repo, "number": int(number) if str(number).isdigit() else 0,
-            "url": pr_url, "title": pr_data.get("title"), "head_sha": head_sha, "sha7": sha7,
-            "base_sha": base_sha, "base_ref": pr_data.get("baseRefName"),
-            "author_is_me": author_is_me, "is_draft": bool(pr_data.get("isDraft")),
-            "ci": compute_ci(pr_data.get("statusCheckRollup")),
+            "url": pr_url, "title": clean_pr_data.get("title"), "head_sha": head_sha, "sha7": sha7,
+            "base_sha": base_sha, "base_ref": clean_pr_data.get("baseRefName"),
+            "author_is_me": author_is_me, "is_draft": bool(clean_pr_data.get("isDraft")),
+            "ci": compute_ci(clean_pr_data.get("statusCheckRollup")),
             "additions": total_adds, "deletions": total_dels, "changed_files": len(sections),
             "core_changed_lines": core_lines, "skim_changed_lines": skim_lines,
+            "lock_changed_lines": lock_lines,
         },
         "gate_g0b": {
-            "draft": bool(pr_data.get("isDraft")), "bot": is_bot,
+            "draft": bool(clean_pr_data.get("isDraft")), "bot": is_bot,
             "lockfile_only": lockfile_only, "in_skim_profile": in_skim_profile,
         },
         "effort": {"resolved": effort, "reason": effort_reason, "small_pr": small_pr},
-        "persona": {
-            "status": persona["status"], "refreshed": persona["refreshed"],
-            "memory": persona["memory"], "voice": persona["voice"],
-            "has_rules": bool(persona["has_house_rules"] or persona["has_learned_prefs"]),
-        },
+        "persona": _persona_summary(persona),
         "signals": signals,
         "lane_plan": lane_plan,
         "lane_slices": {k: {"files": v["file_count"], "lines": v["changed_lines"], "patch": v["patch"]} for k, v in lane_manifest.items()},
@@ -1660,7 +2180,6 @@ def normalize_argv(argv):
 
 def main(argv=None):
     default_persona = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "reference", "persona.md"))
-    default_reviews = os.path.expanduser("~/.claude/review/reviews")
     ap = argparse.ArgumentParser(prog="build_bundle.py", description=__doc__.splitlines()[0])
     ap.add_argument("target", nargs="?")
     ap.add_argument("--level", type=str.upper, choices=REVIEW_LEVELS, default="PR")
@@ -1675,14 +2194,14 @@ def main(argv=None):
     ap.add_argument("--no-tier", action="store_true")
     ap.add_argument("--spec", action="append", default=[])
     ap.add_argument("--persona", default=default_persona)
-    ap.add_argument("--reviews-dir", default=default_reviews)
+    ap.add_argument("--reviews-dir", default=DEFAULT_REVIEWS_DIR)
     ap.add_argument("--local-only", action="store_true")
     ap.add_argument("--shard-max-files", type=int, default=CODEBASE_SHARD_MAX_FILES)
     ap.add_argument("--shard-max-loc", type=int, default=CODEBASE_SHARD_MAX_LOC)
     args = ap.parse_args(normalize_argv(argv))
     try:
         out = build(args)
-    except (ValueError, RuntimeError) as exc:
+    except (ValueError, RuntimeError, OSError, carry_findings.BadInput) as exc:
         sys.stderr.write(f"build_bundle: error: {exc}\n")
         return 2
     json.dump(out, sys.stdout, indent=2, ensure_ascii=False)

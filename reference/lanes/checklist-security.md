@@ -1,6 +1,6 @@
 # Lane checklist: security
 
-Read and apply this checklist strictly to the lines added, modified, or removed in `diff.patch` (inspect callers, guards, and middleware solely as read-only context to verify impact). Report only security flaws introduced or worsened by this PR. Map each item to a `dimension` value.
+**Scope by `LEVEL`:** At `LEVEL: PR`, read and apply this checklist strictly to lines added, modified, or removed in `lanes/security.patch` (inspect callers, guards, and middleware solely as read-only context to verify impact; report only security flaws introduced or worsened by this PR). At `LEVEL: CODEBASE`, read and apply this checklist exhaustively across every file in your assigned `<files_list>` at `head_sha` (pre-existing vulnerabilities in scope are valid; set `introduced_by_pr: "codebase"`). Map each item to a `dimension` value.
 
 **Codebase and framework awareness:** Inspect how the existing codebase and its framework enforce authentication, authorization, tenant isolation, validation, and secret handling. Follow any security checklists, middleware definitions, or framework convention files that the codebase points to.
 

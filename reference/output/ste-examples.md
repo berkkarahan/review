@@ -6,9 +6,9 @@
 |---|---|
 | "We shouldn't do this." · "I think this needs fixing" (blocking) | A problem sentence, then a command: "This <does X>. <Do Y>." |
 | "Can we …?" · "How about …?" · "Maybe we can …" · "i would prefer X over this" (MEDIUM) | A command: "<Verb> …". The prefix shows that it does not block. |
-| "not a blocker" · "feel free to ignore" · "personal preference" (LOW) | The `NIT:` prefix and a command. When the persona marks the item as optional, add "This is optional." |
+| "not a blocker" · "feel free to ignore" · "personal preference" (LOW) | The `voice.nit_prefix` prefix (default `Nit:`, or `NIT:`) and a command. When the persona marks the item as optional, add "This is optional." |
 | "intended?" · "is this expected?" · "Do we need …?" · "why do we need …?" (QUESTION) | One context sentence and one direct question: "Is this change intended?" |
-| "I am not sure but …" | LOW confidence in the prefix, and "This is not verified." |
+| "I am not sure but …" | Gate G4 drops `MEDIUM`/`LOW` with `LOW` confidence; unverified `CRITICAL`/`HIGH` become `QUESTION` (no prefix, add "This is not verified."). |
 | "we usually do;" + bullets | "We usually do this:" + bullets |
 | "better now than later" | "Do this before merge." |
 | "just make sure it will not fail" | "Make sure that <X> does not fail." |
@@ -28,9 +28,9 @@ A HIGH inline comment.
 
 A LOW comment.
 - Before:
-  > NIT: `allow_rename` requires `allow_edit` (400), worth saying here and in docs/api.md:47.
+  > Nit: `allow_rename` requires `allow_edit` (400), worth saying here and in docs/api.md:47.
 - After:
-  > NIT: The API rejects `allow_rename=true` when `allow_edit=false` (400, `api/validators.py:51-55`). Add this rule to this note and to docs/api.md:47.
+  > Nit: The API rejects `allow_rename=true` when `allow_edit=false` (400, `api/validators.py:51-55`). Add this rule to this note and to docs/api.md:47.
 
 A QUESTION (author question with ID citation).
 - Before:
