@@ -22,31 +22,38 @@ no status counts as todo, and one with no origin counts as new.
 
 Output: JSON on stdout:
   {"valid", "level", "effort", "open", "unsatisfied", "declined_blocking", "complete",
-   "band", "verdict", "emoji", "phrase", "event", "reasons", "notes", "invalid"}
+   "band", "verdict", "emoji", "phrase", "event", "next_step", "reasons", "notes", "invalid"}
 Exit code: 0 when valid. 1 when invalid, with one "INVALID: ..." line on stderr for
 each problem. 2 for a usage error. The script never writes a file and never changes
 the findings. The verdict and the event come from this script only. Do not recompute them.
 Stdlib only.
 
-Verdict rules (the code below is the authority):
-  high and medium, checked in order:
-    any verified CRITICAL, any Missing/Contradicted AC, any breaking change with no
-    migration, or HIGH > 3              -> REQUEST CHANGES, event voice.hold_event (default REQUEST_CHANGES)
-    any HIGH, MEDIUM or QUESTION        -> APPROVE WITH COMMENTS, event COMMENT
-    only LOW, or nothing                -> APPROVE, event APPROVE
-    The verdict uses the full merged set, before the medium Pareto cut.
-  low: the low verdict phrases (reference/effort/low.md, Low report); event always COMMENT.
-  skim (PR only; rejected at CODEBASE): the Skim verdict table (reference/effort/skim.md);
-    APPROVE only when the PR is in profile, CI is passing and not author_is_me. A NOT ASSESSED
-    skim lane sets valid=False.
+Verdict rules (the code below is the authority). Effort never changes the verdict, the event
+or the next step. Effort sets only how deep the review looked (reference/effort/levels.md).
+  Checked in order, at every effort:
+    any open CRITICAL, any Missing/Contradicted AC, any breaking change with no
+    migration, or any open HIGH         -> REQUEST CHANGES
+    any MEDIUM or QUESTION              -> APPROVE WITH COMMENTS
+    only LOW, or nothing                -> APPROVE
+  A CRITICAL or HIGH that is plausible or unverified counts the same as a confirmed one.
+  Event at level=PR: REQUEST CHANGES -> voice.hold_event (default REQUEST_CHANGES),
+    APPROVE WITH COMMENTS -> COMMENT, APPROVE -> APPROVE. author_is_me makes it COMMENT.
+  --in-profile and --ci are accepted for compatibility. They have no effect on the verdict or event.
+  skim (PR only; rejected at CODEBASE): a NOT ASSESSED skim lane sets valid=False (no verdict).
   Every level: a NOT ASSESSED lane caps APPROVE at APPROVE WITH COMMENTS (the reason
     names the lane). A new CRITICAL or HIGH with status declined (or a standing confirmed
-    repeat decline) counts in declined_blocking and blocks APPROVE. At level=PR, author_is_me
-    makes the event COMMENT.
+    repeat decline) counts in declined_blocking and blocks APPROVE.
   CODEBASE (level=CODEBASE): maps REQUEST CHANGES -> NEEDS ACTION, APPROVE WITH COMMENTS ->
     IMPROVEMENTS RECOMMENDED, APPROVE -> HEALTHY; counts pre-existing findings; event is
     always NONE (even when author_is_me is true).
-  Quality gate (high and medium): band code-quality, performance and security (via lane or
+  next_step (from the PR-level verdict, before the CODEBASE mapping):
+    fix       REQUEST CHANGES: open blocking items remain.
+    rerun     a lane is NOT ASSESSED. Run the review again.
+    document  APPROVE WITH COMMENTS: only non-blocking or declined items remain. Fix them or
+              record a decline reason (carry_findings.py mark), then stop.
+    done      nothing is left to do.
+    null      the input is invalid.
+  Quality gate (informational, never changes the verdict; high and medium): band code-quality, performance and security (via lane or
     sources); CRITICAL or HIGH -> FAIL, MEDIUM -> CONCERNS, LOW or none -> PASS; the worst
     band wins. A NOT ASSESSED lane sets complete false and caps the band at CONCERNS. Medium
     adds "(partial)" when a lane was folded. Low and skim: band n/a.
@@ -99,9 +106,6 @@ CODEBASE_PHRASE = {
     "IMPROVEMENTS RECOMMENDED": ("🟡", "Codebase needs targeted improvements"),
     "HEALTHY": ("🟢", "Codebase is in good shape"),
 }
-LOW_HIGH_PHRASE = "Fix the HIGH items before merge"
-LOW_NONE_PHRASE = ("No CRITICAL or HIGH issues found. "
-                   "This review did not examine MEDIUM or LOW issues.")
 
 
 def present(v):
@@ -245,10 +249,6 @@ def validate(findings, ac_rows, lanes, effort, invalid, level="PR"):
         if isinstance(sev, str) and sev in ("CRITICAL", "HIGH"):
             if not (f.get("legacy") is True or f.get("origin") == "existing") and not has_trigger(f):
                 invalid.append(f"{fid}: {sev} has no trigger")
-            if f.get("verified") == "unverified":
-                invalid.append(f"{fid}: {sev} is unverified; downgrade it to QUESTION (Phase 2.3)")
-        if effort == "skim" and isinstance(sev, str) and sev in ("MEDIUM", "LOW"):
-            invalid.append(f"{fid}: {sev} must be dropped at skim")
     ids = {f["id"]: f for f in findings if isinstance(f, dict) and is_str_present(f.get("id"))}
     for f in findings:
         if isinstance(f, dict) and is_str_present(f.get("challenges")):
@@ -537,34 +537,19 @@ def compute(data, opts, pre=None, previous=None):
             if effort == "medium" and folded:
                 band += " (partial)"
 
-    # Verdict and event (output/verdict.md, effort/low.md §Low verdict phrases, effort/skim.md §Skim verdict).
-    if effort in ("high", "medium"):
-        if n["CRITICAL"]:
-            verdict, why = "REQUEST CHANGES", "verified CRITICAL"
-        elif unsat:
-            verdict, why = "REQUEST CHANGES", "Missing or Contradicted AC"
-        elif nomig:
-            verdict, why = "REQUEST CHANGES", "breaking change with no migration"
-        elif n["HIGH"] > 3:
-            verdict, why = "REQUEST CHANGES", "HIGH > 3"
-        elif n["HIGH"] or n["MEDIUM"] or (n["QUESTION"] and not QUESTION_ONLY_APPROVES):
-            verdict, why = "APPROVE WITH COMMENTS", "HIGH, MEDIUM or QUESTION"
-        else:
-            verdict, why = "APPROVE", "only LOW, or nothing"
-    elif effort == "low":
-        if n["CRITICAL"] or unsat:
-            verdict, why = "REQUEST CHANGES", "verified CRITICAL or Missing or Contradicted AC"
-        elif n["HIGH"]:
-            verdict, why = "REQUEST CHANGES", "other HIGH"
-        else:
-            verdict, why = "APPROVE", "nothing at CRITICAL or HIGH"
+    # Verdict (output/verdict.md). One table at every effort: effort never changes it.
+    if n["CRITICAL"]:
+        verdict, why = "REQUEST CHANGES", "open CRITICAL"
+    elif unsat:
+        verdict, why = "REQUEST CHANGES", "Missing or Contradicted AC"
+    elif nomig:
+        verdict, why = "REQUEST CHANGES", "breaking change with no migration"
+    elif n["HIGH"]:
+        verdict, why = "REQUEST CHANGES", "open HIGH"
+    elif n["MEDIUM"] or (n["QUESTION"] and not QUESTION_ONLY_APPROVES):
+        verdict, why = "APPROVE WITH COMMENTS", "MEDIUM or QUESTION"
     else:
-        if n["CRITICAL"] or n["HIGH"]:
-            verdict, why = "REQUEST CHANGES", "verified CRITICAL or HIGH"
-        elif n["QUESTION"]:
-            verdict, why = "APPROVE WITH COMMENTS", "QUESTION"
-        else:
-            verdict, why = "APPROVE", "nothing"
+        verdict, why = "APPROVE", "only LOW, or nothing"
     reasons.append(why)
     if verdict == "APPROVE" and declined:
         verdict = "APPROVE WITH COMMENTS"
@@ -576,31 +561,29 @@ def compute(data, opts, pre=None, previous=None):
                         if isinstance(ln, dict) and lane_state(ln) == "NOT ASSESSED")
         reasons.append("incomplete: NOT ASSESSED lane(s) " + ", ".join(failed) + " block APPROVE")
 
+    if verdict == "REQUEST CHANGES":
+        next_step = "fix"
+    elif not complete:
+        next_step = "rerun"
+    elif verdict == "APPROVE WITH COMMENTS":
+        next_step = "document"
+    else:
+        next_step = "done"
+
     if level == "CODEBASE":
         verdict = CODEBASE_VERDICT_MAP[verdict]
         emoji, phrase = CODEBASE_PHRASE[verdict]
         event = "NONE"
     else:
         emoji, phrase, me_phrase = PHRASE[verdict]
-        if effort == "low" and not me:
-            if verdict == "REQUEST CHANGES" and why == "other HIGH":
-                phrase = LOW_HIGH_PHRASE
-            elif verdict == "APPROVE":
-                emoji, phrase = "🟢", LOW_NONE_PHRASE
         if me:
             phrase = me_phrase
-
-        if me or effort == "low":
+        if me:
             event = "COMMENT"
         elif verdict == "REQUEST CHANGES":
-            if effort == "skim":
-                event = hold if n["CRITICAL"] else "COMMENT"
-            else:
-                event = hold
+            event = hold
         elif verdict == "APPROVE WITH COMMENTS":
             event = "COMMENT"
-        elif effort == "skim":
-            event = "APPROVE" if (in_profile and ci == "passing") else "COMMENT"
         else:
             event = "APPROVE"
 
@@ -617,6 +600,7 @@ def compute(data, opts, pre=None, previous=None):
         "emoji": emoji,
         "phrase": phrase,
         "event": event,
+        "next_step": next_step,
         "reasons": reasons,
         "notes": notes,
         "invalid": invalid,
@@ -655,7 +639,7 @@ def main(argv=None):
     prev = load(args.previous, "previous file", bad) if args.previous else None
     if bad or data is None:
         out = {"valid": False, "open": None, "unsatisfied": None, "complete": None, "band": None,
-               "verdict": None, "event": None, "invalid": bad}
+               "verdict": None, "event": None, "next_step": None, "invalid": bad}
     else:
         out = compute(data, vars(args), pre, prev)
     json.dump(out, sys.stdout, indent=2, ensure_ascii=False)

@@ -41,7 +41,7 @@ A **framework-agnostic, codebase-aware, multi-lane code review skill** for AI co
 - **High-Throughput Orchestration & Token Optimization:** Automates Phase 0 bundling, parallel-threaded `gh`/`git` fetches, `diff-map.json`, signals, carry prep, and **per-lane diff slicing** (`lanes/<lane>.patch` at `PR` or `lanes/<lane>.files.txt` at `CODEBASE`) via [`scripts/build_bundle.py`](./scripts/build_bundle.py); cuts Phase 1 cold-start tokens by ~75% via [`lanes/lane-brief.md`](./reference/lanes/lane-brief.md) and **micro-lane auto-folding** (≤ 40 changed lines across ≤ 2 files); eliminates LLM YAML→JSON re-typing via [`scripts/merge_findings.py`](./scripts/merge_findings.py); overlaps Phase 2.2 Blind Verification with Non-Blocking Evaluation in one parallel wave; applies `fast` model tiering on `skim` and `low` efforts (`--no-tier` to override); and short-circuits Phase 3 on clean `APPROVE`/`HEALTHY` reviews.
 - **Deterministic Python Quality Gates (Stdlib-Only):** Uses zero-dependency Python scripts in [`scripts/`](./scripts) to build parallel bundles and per-lane diff slices (`build_bundle.py`), map diff lines (`diff_map.py`), run Gates `G1`–`G6`, dedupe, safety-floor enforcement, Carry `G9`, Breaker, and `medium` Pareto cuts (`merge_findings.py`), enforce schema/diff/trigger/confidence gates (`schema_lint.py`), reconcile carried findings (`carry_findings.py`), compute mechanical verdicts (`breaker.py`), lint Simplified Technical English and question refreshers (`ste_lint.py`), and measure per-lane precision (`precision.py`).
 - **Stateful Re-Review & Delta Carry:** Automatically detects prior reviews of the same PR, assigns stable finding IDs (`B1`, `D1`, `S1`, …), reviews only the commit delta (`<last_sha>..<head_sha>`) when history is linear, preserves user declines, and requires code evidence at `head_sha` to close open `CRITICAL`/`HIGH` findings or challenge prior declines.
-- **Configurable Persona & Memory Acquisition:** Adapts emphasis, comment structure, inline budgets, tone (`direct`, `constructive`, `mentor`, `strict`, `concise`, `neutral`), objective house rules (§8), and learned preferences (§9) via [`reference/persona.md`](./reference/persona.md) without ever compromising the safety floor or STE grammar.
+- **Configurable Persona & Memory Acquisition:** Adapts emphasis, comment structure, inline budgets, tone (`direct`, `constructive`, `mentor`, `strict`, `concise`, `neutral`), objective house rules (§8), and learned preferences (§9) via the persona file (`~/.claude/review/persona.md`, template in [`reference/persona.md`](./reference/persona.md)) without ever compromising the safety floor or STE grammar.
 
 ---
 
@@ -50,7 +50,7 @@ A **framework-agnostic, codebase-aware, multi-lane code review skill** for AI co
 ```mermaid
 flowchart TD
     Entry["/review $ARGUMENTS"] --> ModeSwitch{"Mode Switch"}
-    ModeSwitch -->|"Persona / Preference Setup"| ConfigMode["Interactive Persona Configuration<br/>(reference/output/persona-pass.md)<br/>Updates reference/persona.md"]
+    ModeSwitch -->|"Persona / Preference Setup"| ConfigMode["Interactive Persona Configuration<br/>(reference/output/persona-pass.md)<br/>Updates ~/.claude/review/persona.md"]
     ModeSwitch -->|"Code Review"| P0["Phase 0: Plan (Inline)"]
 
     subgraph Phase0 ["Phase 0: Plan (1 Parallel-Threaded Script Call + Optional External Fetch)"]
@@ -65,8 +65,8 @@ flowchart TD
 
     subgraph Phase2 ["Phase 2: Deterministic Merge, Overlapped Verify/Eval Wave & Finalize"]
         Lanes --> Merge["2.1 scripts/merge_findings.py merge &amp; drop-g6<br/>(Zero-token G1-G6, pruning, dedupe, split verify-batches &amp; nonblocking)"]
-        Merge --> Verify["2.2a Blind Verifiers (Parallel)<br/>(CRITICAL/HIGH &amp; Missing/Contradicted ACs)"]
-        Merge --> Eval["2.2b Evaluation Lane - Gate G10 (Parallel)<br/>(MEDIUM/LOW/QUESTION + MEDIUM evidence check -> post|chat-only|drop)"]
+        Merge --> Verify["2.2 Blind Verifiers (Parallel)<br/>(CRITICAL/HIGH &amp; Missing/Contradicted ACs)"]
+        Merge --> Eval["2.2 Evaluation Lane - Gate G10 (Parallel)<br/>(MEDIUM/LOW/QUESTION + MEDIUM evidence check -> post|chat-only|drop)"]
         Verify --> Finalize["2.3 scripts/merge_findings.py finalize<br/>(Safety Floor + Carry G9 + Breaker Verdict + Medium Pareto Cut)"]
         Eval --> Finalize
     end
@@ -89,7 +89,7 @@ flowchart TD
 | :--- | :--- | :--- | :--- |
 | **Phase 0: Plan (`0.1–0.3`)** | Lead (inline) | Resolves target and effort level, checks persona status, builds the immutable review bundle (`bundle_dir`) and `diff-map.json` (or `file-map.json` at `CODEBASE`), detects prior reviews for carry/delta mode, discovers the scoped intent chain (`intent.md`), selects conditional lanes, and prints the STE review plan. | [`bundle.md`](./reference/bundle.md), [`intent.md`](./reference/intent.md), [`effort/levels.md`](./reference/effort/levels.md), [`lanes/selection.md`](./reference/lanes/selection.md), [`build_bundle.py`](./scripts/build_bundle.py), [`diff_map.py`](./scripts/diff_map.py), [`carry_findings.py`](./scripts/carry_findings.py) |
 | **Phase 1: Fan Out** | Subagent lanes | Runs all selected candidate lanes concurrently in a single message. Every lane reads the shared bundle without re-fetching the PR, reviews strictly within scope (`diff.patch` at `PR`, `<files_list>` at `CODEBASE`) and its assigned `FOCUS` / `OWNERSHIP`, and returns compact JSON (`lanes/lane-brief.md` §Return). | [`lanes/prompt.md`](./reference/lanes/prompt.md), [`lanes/lane-brief.md`](./reference/lanes/lane-brief.md), [`lanes/lane-rules.md`](./reference/lanes/lane-rules.md), [`schema/finding.md`](./reference/schema/finding.md), [`lanes/*.md`](./reference/lanes) |
-| **Phase 2: Merge, Verify & Evaluate (`2.1–2.3`)** | Lead + Verifiers + Evaluator | Validates lane outputs (`G1`), applies deterministic gates (`G2` drops out-of-diff/invalid-location items, `G3`–`G6`), deduplicates findings, dispatches blind verifier subagents (`2.2a`) overlapped with the `evaluation` lane (`2.2b`, `G10`), runs inline follow-up when needed, reconciles carried state (`G9`), and runs `breaker.py` via `merge_findings.py finalize` (`2.3`). | [`gates.md`](./reference/gates.md), [`lanes/verifier.md`](./reference/lanes/verifier.md), [`lanes/evaluation.md`](./reference/lanes/evaluation.md), [`output/verdict.md`](./reference/output/verdict.md), [`merge_findings.py`](./scripts/merge_findings.py), [`schema_lint.py`](./scripts/schema_lint.py), [`carry_findings.py`](./scripts/carry_findings.py), [`breaker.py`](./scripts/breaker.py) |
+| **Phase 2: Merge, Verify & Evaluate (`2.1–2.3`)** | Lead + Verifiers + Evaluator | Validates lane outputs (`G1`), applies deterministic gates (`G2` drops out-of-diff/invalid-location items, `G3`–`G6`), deduplicates findings, dispatches blind verifier subagents overlapped with the `evaluation` lane (`G10`) in one parallel wave (`2.2`), runs inline follow-up when needed, reconciles carried state (`G9`), and runs `breaker.py` via `merge_findings.py finalize` (`2.3`). | [`gates.md`](./reference/gates.md), [`lanes/verifier.md`](./reference/lanes/verifier.md), [`lanes/evaluation.md`](./reference/lanes/evaluation.md), [`output/verdict.md`](./reference/output/verdict.md), [`merge_findings.py`](./scripts/merge_findings.py), [`schema_lint.py`](./scripts/schema_lint.py), [`carry_findings.py`](./scripts/carry_findings.py), [`breaker.py`](./scripts/breaker.py) |
 | **Phase 3: Persona Pass** | Lead | Re-ranks evaluated findings according to `persona.md` emphasis and learned preferences (`pareto.json` at `medium`), visually folds `LOW` items with `path:line`, shapes comments in `voice.tone`, moves Gate G7 excess PR-inline comments to chat-only (`PR` only), rewrites all human-read text in ASD-STE100 with 1-sentence question refreshers, and verifies compliance with `ste_lint.py` (`G8`). | [`output/persona-pass.md`](./reference/output/persona-pass.md), [`persona.md`](./reference/persona.md), [`output/ste.md`](./reference/output/ste.md), [`output/ste-examples.md`](./reference/output/ste-examples.md), [`ste_lint.py`](./scripts/ste_lint.py) |
 | **Phase 4: Deliver & Post (`4.1–4.3`)** | Lead | Prints the report and AC matrix to chat, archives durable artifacts (`report.md`, `ac-matrix.md`, `findings.json`, `breaker-input.json`) to `~/.claude/review/reviews/`, runs `carry_findings.py mark` on user declines/fixes (from Round 1 onward), logs decisions to `~/.claude/review/feedback.jsonl`, saves generalizable preferences to `persona.md`, and posts to GitHub (`level=PR` only) after verifying `head_sha`/`state` and receiving explicit confirmation. | [`output/report.md`](./reference/output/report.md), [`output/posting.md`](./reference/output/posting.md), [`precision.py`](./scripts/precision.py) |
 
@@ -131,6 +131,8 @@ git clone https://github.com/berkkarahan/review.git .agent/skills/review
 
 `/review` is the **single entrypoint** for all operations. Targets, actions, and flags are resolved from `$ARGUMENTS`, natural language instructions, workspace git context, and prior review state.
 
+**Invocation.** In Antigravity the skill itself is `/review`. In the other tools (Claude Code, Cursor, OpenCode, Pi, and any other tool that supports user command files), a thin command file in [`commands/`](./commands/) starts the skill as `/review` and `/review-pr`. Claude Code has a built-in `/review` that can take the name, so `/review-pr` is the reliable command there. Both command files only say "read and follow `SKILL.md`". They hold no review logic.
+
 ### Common Invocations
 
 ```text
@@ -162,7 +164,14 @@ git clone https://github.com/berkkarahan/review.git .agent/skills/review
 /review level=CODEBASE
 /review level=CODEBASE src/
 
-# 8. Configure reviewer persona, tone, house rules, or memory interactively
+# 8. Review changes that are not committed yet (no PR, no gh call, no carry state, nothing posted)
+/review staged
+/review uncommitted
+
+# 9. Run without questions for an agent loop (prints a final JSON block with next_step)
+/review #42 --non-interactive
+
+# 10. Configure reviewer persona, tone, house rules, or memory interactively
 /review configure my persona to use constructive tone and emphasize security and backward-compatibility
 ```
 
@@ -173,7 +182,7 @@ All options can be passed as explicit flags or stated in natural language (note:
 | Option / Flag | Values / Syntax | Default | Behavior |
 | :--- | :--- | :--- | :--- |
 | `level` / `--level` | `PR \| CODEBASE` | `PR` | Sets review scope. Always `PR` unless explicitly set to `CODEBASE`. `CODEBASE` exhaustively audits the full repository (or optional `<path>` scope) with all 7 lanes (`auto → high`, automatic directory sharding for >30 files / >6k LOC, `file-map.json` Gate G2, codebase health verdict). |
-| `--effort` | `high \| medium \| low \| skim \| auto` | `auto` | Controls bundle depth, lane count, verifier subagents, Pareto cuts, and report length. Resolves to `high` at `level=CODEBASE` (`skim` disallowed at `CODEBASE`). See [Effort Profiles](#effort-profiles--the-five-core-invariants). |
+| `--effort` | `high \| medium \| low \| skim \| auto` | `auto` | Controls how much the model thinks and how far it looks (thinking and reach), plus lane count, verifier subagents, Pareto cuts, and report length. **It never changes the verdict or the event.** Resolves to `high` at `level=CODEBASE` (`skim` disallowed at `CODEBASE`). See [Effort Profiles](#effort-profiles--the-five-core-invariants). |
 | `--since-last` | flag | auto-detected | Reviews the commit delta (`<last_sha>..<head_sha>`) when an earlier review exists and `last_sha` is an ancestor of `head_sha`. Automatically triggered when new commits are pushed. |
 | `--fresh` | flag | `false` | Ignores any earlier `findings.json` in `~/.claude/review/reviews/` and runs a clean full review without carry state. |
 | `--spec` | `<path-or-url>` | auto-discovered | Explicitly adds a planned document, spec, RFC, PRD, or URL to the Intent Chain (`Phase 0.2`). Ignored at `skim`. |
@@ -181,6 +190,7 @@ All options can be passed as explicit flags or stated in natural language (note:
 | `--no-inherit` | flag | `false` | Runs only `adherence` and `conventions` (when triggered; skips checklist-based lanes). At `low`, removes security/performance items from `critical-risk`. Ignored at `skim`. |
 | `--inline` | flag | auto (`small_pr`) | Forces small-PR mode at `high`/`medium` (`PR` only: lead runs `adherence` inline while at most 2 other lanes run in parallel). Ignored at `skim`. |
 | `--no-tier` | flag | `false` | Disables `fast` model tiering on `low` and `skim` subagents, forcing `standard` (`inherit`). (`high` and `medium` always use `standard`/`inherit`.) |
+| `--non-interactive` | flag | `false` | Asks no question, records no feedback, never posts, and ends with one JSON block: `next_step`, `verdict`, `open`, and the paths of the archived `findings.json` and `report.md`. |
 | `--post` | flag | interactive prompt | Proceeds directly to the Phase 4.3 GitHub review payload builder and confirmation flow after generating a `PR` report. |
 
 **Option Precedence:** `level` / `--level` → `--effort` → `--lanes` → `--no-inherit` → `--inline` / small-PR mode → `--spec` → `--no-tier` → `--post`.
@@ -188,6 +198,23 @@ All options can be passed as explicit flags or stated in natural language (note:
 ---
 
 ## Effort Profiles & The Five Core Invariants
+
+### Effort sets depth only
+
+Effort tells the model how much to think and how far to look. It does not draw a line between APPROVE, APPROVE WITH COMMENTS and REQUEST CHANGES. One table gives the verdict, the event and `next_step` at every effort ([`reference/output/verdict.md`](./reference/output/verdict.md)):
+
+| Condition (checked in order) | Verdict | Event (`PR`) | `next_step` |
+| :--- | :--- | :--- | :--- |
+| Any open `CRITICAL`, unmet acceptance criterion, unmigrated breaking change, or **any open `HIGH`** | `REQUEST CHANGES` | `voice.hold_event` | `fix` |
+| Any `MEDIUM` or `QUESTION` | `APPROVE WITH COMMENTS` | `COMMENT` | `document` |
+| Only `LOW`, or nothing | `APPROVE` | `APPROVE` | `done` |
+
+A `NOT ASSESSED` lane gives `rerun`. A `plausible` or `unverified` `CRITICAL`/`HIGH` counts like a confirmed one, but it has no safety floor and the report tags it. Verifier results are `confirmed`, `plausible`, `refuted` and `unclear`. A `CRITICAL`/`HIGH` with no verifier result is `unverified` at every effort.
+
+| | `skim` | `low` | `medium` | `high` |
+| :--- | :--- | :--- | :--- | :--- |
+| **Thinking** | brief | brief | standard | deep |
+| **Reach** | 1st degree: the diff lines only | 2nd degree: the diff plus direct callers, callees and guards | full 2nd degree plus tests, context files and related modules. 3rd degree only for `auth`, `data` or `contract` signals | 3rd degree: related code that is not in the PR (sibling implementations, consumers of changed contracts, shared config, same-pattern modules, specs and docs), and outside knowledge such as library behavior and advisories when the host has a docs or web tool |
 
 ### The Five Core Invariants
 
@@ -217,13 +244,14 @@ When `--effort` is omitted or set to `auto`, Phase 0.1 (`build_bundle.py`) resol
 | **Bundle Context** | Full (`head/` copies + up to 20 context files / 3k LOC + `base/` rules + `diff-map.json`; `file-map.json` + `.files.txt` at `CODEBASE`) | Full (`head/` copies + up to 10 context files / 1.5k LOC + `base/` rules + `diff-map.json`; `file-map.json` at `CODEBASE`) | Reduced diff (`diff.core.patch`) at `PR` or `critical-risk.files.txt` at `CODEBASE`; no `head/`, no `context_files.txt` | `diff.skim.patch` + `lock.patch` + `diff-map.json`; no `head/`, no `context_files.txt` (`signals.txt` built for `in_skim_profile`; disallowed at `CODEBASE`) |
 | **Intent Pack** | Full (PR-scoped specs, plans, tickets, issues, PR claims; repo specs/docs at `CODEBASE`) | Full | Compact (ACs/promises, must-not-change boundaries, PR claims, conflicts) | PR title, description, and commit headlines only (no specs/tickets) |
 | **Phase 1 Lanes** | Up to **6** parallel lanes at `PR` (**7** at `CODEBASE`) | Up to **3** parallel conditional lanes (wider folding into `conventions`) | Lead inline if `core_lines < 400` and no `--lanes`; else **1** `critical-risk` subagent (`fast` unless `--no-tier`) | Exactly **1** `skim` subagent (`fast` unless `--no-tier`) |
-| **Severities Reported** | All (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `QUESTION`) | All (Pareto-ordered; ≤ 5 non-blocking per lane) | `CRITICAL` and `HIGH` only | `CRITICAL`, `HIGH`, and ≤ 3 `QUESTION`s |
+| **Thinking / Reach** | deep / wide (3rd degree) | standard / related | brief / callers (2nd degree) | brief / diff (1st degree) |
+| **Lanes look for** | All severities | All severities (Pareto-ordered; ≤ 5 non-blocking per lane) | `CRITICAL` and `HIGH` first, every finding with evidence is reported | `CRITICAL` and `HIGH` first, every finding with evidence is reported, ≤ 3 questions |
 | **AC Matrix** | All rows shown/archived | All evaluated; only non-`Met` rows returned | Only `Missing` and `Contradicted` rows | None |
 | **Blind Verifiers** | Up to **6** verifier subagents at `PR` (**8** at `CODEBASE`) | Up to **2** verifier subagents (`CRITICAL`/`HIGH` only) | Lead verifies inline (no subagents) | Lead verifies inline (no subagents) |
 | **Evaluation (`G10`)** | 1 `evaluation` subagent (`lanes/evaluation.md`) + inline follow-up | 1 `evaluation` subagent (`lanes/evaluation.md`) + inline follow-up | Lead evaluates inline (`lanes/evaluation.md` rubric) | Lead evaluates inline (`lanes/evaluation.md` rubric) |
 | **Quality Gate Band** | Full (`PASS` / `CONCERNS` / `FAIL`) | Computed on active lanes; marked `(partial)` if folded | `n/a` | `n/a` |
 | **Persona Pass** | Full (re-rank, `LOW` visual fold, tone, `G7`, STE, `G8`) | Full on `pareto.json` set | STE rewrite + `G8` only | STE rewrite + `G8` only |
-| **`APPROVE` Allowed?** | Yes (`PR` only; `NONE` at `CODEBASE`) | Yes (`PR` only) | **Never** (event is always `COMMENT`) | Only when in-profile, CI is `passing`, and `!author_is_me` |
+| **`APPROVE` Allowed?** | Yes, when the verdict is `APPROVE` and `!author_is_me` (`PR` only; `NONE` at `CODEBASE`) | Same | Same | Same |
 
 ---
 
@@ -307,9 +335,9 @@ All scripts are standalone Python 3 modules using only the standard library:
 
 ```bash
 # 0. Build bundle, diff-map (or codebase file-map), signals, per-lane slices, carry prep & effort resolution
-python3 scripts/build_bundle.py [target|scope_path] [--level PR|CODEBASE] [--effort auto|high|medium|low|skim] \
+python3 scripts/build_bundle.py [target|staged|uncommitted|scope_path] [--level PR|CODEBASE] [--effort auto|high|medium|low|skim] \
   [--since-last] [--fresh] [--lanes a,b] [--no-inherit] [--inline] [--no-tier] [--spec <path-or-url>]... \
-  [--local-only] [--cwd <dir>] [--bundle-dir <dir>] [--persona <path>] [--reviews-dir <dir>] \
+  [--local-only] [--non-interactive] [--cwd <dir>] [--bundle-dir <dir>] [--persona <path>] [--reviews-dir <dir>] \
   [--shard-max-files <n>] [--shard-max-loc <n>]
 
 # 1. Build a map of added and context right-side line numbers per file from a unified diff
@@ -330,7 +358,7 @@ python3 scripts/carry_findings.py prepare <prev_findings.json|-> <bundle_dir> [-
 python3 scripts/carry_findings.py reconcile <prev_findings.json|-> <new-findings.json> <bundle_dir>/findings.json [--reported <bundle_dir>/reported.json] [--level PR|CODEBASE]
 python3 scripts/carry_findings.py mark <durable_findings.json> <decisions.json> [--level PR|CODEBASE]
 
-# 5. Compute mechanical verdict, phrase, GitHub event, completeness, and quality-gate band
+# 5. Compute mechanical verdict, phrase, GitHub event, next_step, completeness, and quality-gate band (the same at every effort)
 python3 scripts/breaker.py <bundle_dir>/merged.json [--level PR|CODEBASE] --effort <high|medium|low|skim> \
   [--hold-event REQUEST_CHANGES|COMMENT] [--author-is-me] [--in-profile] [--ci <value>] \
   [--pre <pre.json>] [--previous <findings.json>]
@@ -364,7 +392,7 @@ When `/review` runs again on the same PR or codebase (unless `--fresh` is set):
 
 ## Reviewer Persona, House Rules & Learned Memory
 
-[`reference/persona.md`](./reference/persona.md) controls the reviewer's voice, priorities, objective house rules, and learned preferences. By default (`status: empty`), reviews run in a neutral, direct STE voice.
+The live persona file is `~/.claude/review/persona.md` (`persona_path` in `bundle-summary.json`). It controls the reviewer's voice, priorities, objective house rules, and learned preferences. [`reference/persona.md`](./reference/persona.md) is only the empty template: it is copied to `~/.claude/review/` on first save, and the skill never writes preferences under `reference/`, so the skill folder stays clean in git. By default (`status: empty`), reviews run in a neutral, direct STE voice.
 
 ### Frontmatter Configuration
 
@@ -437,6 +465,7 @@ All human-facing output produced by `review` follows **ASD-STE100 Simplified Tec
 ```text
 review/
 ├── SKILL.md                                  # Main skill definition, constraints, load map, and 5-phase workflow
+├── commands/                                 # Thin command files (review.md, review-pr.md) that start this skill in tools that use command files
 ├── LICENSE                                   # Apache License 2.0
 ├── README.md                                 # Repository documentation
 ├── .gitignore                                # Git ignore rules for Python cache, temp files, and OS artifacts

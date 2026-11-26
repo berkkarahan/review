@@ -6,7 +6,11 @@ Usage:
                   [--effort auto|high|medium|low|skim] [--since-last] [--fresh]
                   [--lanes a,b] [--no-inherit] [--inline] [--no-tier]
                   [--spec <path-or-url>]... [--persona <path>] [--reviews-dir <dir>]
-                  [--local-only] [--shard-max-files <n>] [--shard-max-loc <n>]
+                  [--local-only] [--non-interactive] [--shard-max-files <n>] [--shard-max-loc <n>]
+
+target: a PR URL, owner/repo#N, #N, `staged`, `uncommitted`, or nothing (open PR of the branch, else local branch diff).
+`staged` and `uncommitted` review changes that are not committed yet. They read changed files from the index or
+the working tree into head/, never call gh, and do not use carry state.
 
 Outputs a compact JSON summary to stdout and writes `<bundle_dir>/bundle-summary.json`.
 Stdlib only. All shell identifiers are strictly sanitized before any git/gh command (shell=False).
@@ -174,6 +178,34 @@ KNOWN_BOT_LOGINS = {
 }
 DEFAULT_REVIEWS_DIR = os.path.expanduser("~/.claude/review/reviews")
 LEGACY_REVIEWS_DIR = os.path.expanduser("~/.claude/generic-pr-review/reviews")
+USER_REVIEW_HOME = os.path.expanduser("~/.claude/review")
+TEMPLATE_PERSONA = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "reference", "persona.md"))
+UNCOMMITTED_MODES = ("staged", "uncommitted")
+
+# Effort sets only how much the model thinks and how far it looks. It never changes the verdict.
+DEPTH_BY_EFFORT = {
+    "skim": {"thinking": "brief", "reach": "diff"},
+    "low": {"thinking": "brief", "reach": "callers"},
+    "medium": {"thinking": "standard", "reach": "related"},
+    "high": {"thinking": "deep", "reach": "wide"},
+}
+
+
+def depth_for(effort):
+    return dict(DEPTH_BY_EFFORT.get(effort, DEPTH_BY_EFFORT["high"]))
+
+
+def resolve_persona_path(explicit, user_home=None, template=None):
+    """Return (path, source). Order: explicit --persona, then <user_home>/persona.md, then the template.
+    This function never writes a file."""
+    user_home = USER_REVIEW_HOME if user_home is None else user_home
+    template = TEMPLATE_PERSONA if template is None else template
+    if explicit:
+        return os.path.abspath(explicit), "custom"
+    user = os.path.join(user_home, "persona.md")
+    if os.path.isfile(user):
+        return user, "user"
+    return template, "template"
 
 
 # ---------------------------------------------------------------------------
@@ -597,6 +629,8 @@ def parse_target(target, cwd):
         if not owner or not repo:
             raise ValueError("origin remote is not a GitHub repository")
         return _validated_pr_coords(owner, repo, num)
+    if t.lower() in UNCOMMITTED_MODES:
+        return t.lower(), None, None, None, None
     raise ValueError(f"unrecognized target format: {t}")
 
 
@@ -719,6 +753,41 @@ def copy_snapshot_files(clone, head_sha, paths, out_root, owner=None, repo=None)
             return path, False
         if rc != 0:
             return path, False
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "w", encoding="utf-8", errors="replace") as fh:
+            fh.write(content)
+        return path, True
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        for p, ok in ex.map(fetch_one, paths):
+            (copied if ok else failed).append(p)
+    return copied, failed
+
+
+def copy_worktree_files(clone, mode, paths, out_root):
+    """Copy changed files that are not committed yet into out_root.
+    staged: the index content. uncommitted: the working tree content."""
+    copied = []
+    failed = []
+
+    def fetch_one(path):
+        if not clone or not is_safe_relpath(path) or is_denylisted(path):
+            return path, False
+        dst = os.path.join(out_root, path)
+        if mode == "staged":
+            rc, content, _ = run_cmd(["git", "-C", clone, "show", f":{path}"])
+            if rc != 0:
+                return path, False
+        else:
+            src = os.path.join(clone, path)
+            real = os.path.realpath(src)
+            if not real.startswith(os.path.realpath(clone) + os.sep) or not os.path.isfile(real):
+                return path, False
+            try:
+                with open(real, encoding="utf-8", errors="replace") as fh:
+                    content = fh.read()
+            except OSError:
+                return path, False
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         with open(dst, "w", encoding="utf-8", errors="replace") as fh:
             fh.write(content)
@@ -1450,7 +1519,15 @@ def _apply_delta_diff(clone, target_mode, owner, repo, head_sha, carry_state, ca
     if rc_ce == 0:
         rc_anc, _, _ = run_cmd(["git", "-C", clone, "merge-base", "--is-ancestor", last_sha, head_sha])
         if rc_anc == 0:
-            rc_dd, out_dd, _ = run_cmd(["git", "-C", clone, "diff", "-M", f"{last_sha}..{head_sha}"])
+            # Limit the delta to files in the full PR diff. Without this, master
+            # merged into the branch since last_sha leaks unrelated files in.
+            pr_paths = set()
+            for m in re.finditer(r"^diff --git a/(.+?) b/(.+)$", full_pr_diff or "", re.M):
+                pr_paths.update(m.groups())
+            delta_cmd = ["git", "-C", clone, "diff", "-M", f"{last_sha}..{head_sha}"]
+            if pr_paths and target_mode == "pr":
+                delta_cmd += ["--"] + sorted(pr_paths)
+            rc_dd, out_dd, _ = run_cmd(delta_cmd)
             if rc_dd == 0:
                 with open(os.path.join(bundle_dir, "pr.diff.patch"), "w", encoding="utf-8") as fh:
                     fh.write(full_pr_diff)
@@ -1716,7 +1793,8 @@ def build_codebase(args, cwd):
     with open(os.path.join(lanes_dir, "manifest.json"), "w", encoding="utf-8") as fh:
         json.dump(lane_manifest, fh, indent=2)
 
-    persona = parse_persona_frontmatter(args.persona)
+    persona_path, persona_source = resolve_persona_path(args.persona)
+    persona = parse_persona_frontmatter(persona_path)
     lane_plan = select_codebase_lanes(effort, lane_manifest, persona, rules_discovered, args)
 
     total_lines = sum(r["lines"] for r in records)
@@ -1753,6 +1831,10 @@ def build_codebase(args, cwd):
         },
         "effort": {"resolved": effort, "reason": effort_reason, "small_pr": False},
         "persona": _persona_summary(persona),
+        "persona_path": persona_path,
+        "persona_source": persona_source,
+        "depth": depth_for(effort),
+        "interactive": not args.non_interactive,
         "signals": signals,
         "lane_plan": lane_plan,
         "lane_slices": {
@@ -1912,6 +1994,42 @@ def build(args):
                 coverage_limits.append("base commit not available")
         if not clone:
             coverage_limits.append("no clone — GitHub API only")
+    elif mode in UNCOMMITTED_MODES:
+        # Staged or uncommitted changes. No gh call. Carry state is off.
+        if not clone:
+            raise RuntimeError("not inside a git repository")
+        target_mode = mode
+        rc_h, out_h, err_h = run_cmd(["git", "-C", clone, "rev-parse", "HEAD"])
+        if rc_h != 0 or not SAFE_SHA.match(out_h.strip()):
+            raise RuntimeError(f"cannot resolve HEAD: {err_h.strip()}")
+        head_sha = out_h.strip()
+        rc_br, out_br, _ = run_cmd(["git", "-C", clone, "rev-parse", "--abbrev-ref", "HEAD"])
+        head_ref = out_br.strip() if rc_br == 0 else "HEAD"
+        diff_cmd = ["git", "-C", clone, "diff"] + (["--cached"] if mode == "staged" else []) + ["-M", "HEAD"]
+        rc_d, out_d, err_d = run_cmd(diff_cmd)
+        if rc_d != 0:
+            raise RuntimeError(f"git diff failed: {err_d.strip()}")
+        if not out_d.strip():
+            raise RuntimeError(f"no {mode} changes")
+        diff_text = out_d
+        if mode == "uncommitted":
+            rc_u, out_u, _ = run_cmd(["git", "-C", clone, "ls-files", "--others", "--exclude-standard"])
+            untracked = [ln for ln in out_u.splitlines() if ln.strip()] if rc_u == 0 else []
+            if untracked:
+                coverage_limits.append(f"untracked files not reviewed: {len(untracked)} (stage them to include)")
+        base_ref, base_sha = "HEAD", head_sha
+        owner = "local"
+        repo = os.path.basename(os.path.abspath(clone))
+        number = "0"
+        pr_url = ""
+        pr_data = {
+            "number": 0,
+            "title": f"{'Staged' if mode == 'staged' else 'Uncommitted'} changes on {head_ref}",
+            "body": "", "state": "OPEN", "isDraft": False,
+            "author": {"login": "local"}, "baseRefName": base_ref, "baseRefOid": base_sha,
+            "headRefName": head_ref, "headRefOid": head_sha,
+            "commits": [], "statusCheckRollup": [], "closingIssuesReferences": [],
+        }
     else:
         # Local branch diff mode
         if not clone:
@@ -1964,10 +2082,12 @@ def build(args):
         }
 
     sha7 = head_sha[:7]
-    bundle_dir = _resolve_bundle_dir(args.bundle_dir, owner, repo, number, sha7)
+    bundle_sha = f"{sha7}-{target_mode}" if target_mode in UNCOMMITTED_MODES else sha7
+    bundle_dir = _resolve_bundle_dir(args.bundle_dir, owner, repo, number, bundle_sha)
 
-    # Carry & delta check
-    prev_path = None if args.fresh else find_previous_findings(args.reviews_dir, owner, repo, number)
+    # Carry & delta check (carry state is off for staged and uncommitted changes)
+    no_carry = args.fresh or target_mode in UNCOMMITTED_MODES
+    prev_path = None if no_carry else find_previous_findings(args.reviews_dir, owner, repo, number)
     full_pr_diff = diff_text
     carry_info, carry_state = prepare_carry_state(prev_path, bundle_dir, coverage_limits)
     if carry_state is not None:
@@ -2071,10 +2191,13 @@ def build(args):
         with open(os.path.join(bundle_dir, "lock.patch"), "w", encoding="utf-8") as fh:
             fh.write(lock_patch)
 
-    # Full head/ copies & context_files.txt at high and medium
+    # Full head/ copies & context_files.txt at high and medium.
+    # Staged and uncommitted changes always get head/ copies of the changed files (every effort),
+    # because the files are not in a commit that a lane can read with git show.
     scope_truncated = False
     context_paths = []
-    if effort in ("high", "medium"):
+    snapshot = {"staged": "index", "uncommitted": "worktree"}.get(target_mode, "commit")
+    if effort in ("high", "medium") or target_mode in UNCOMMITTED_MODES:
         non_deleted = [s for s in sections if s["status"] != "deleted" and not s["binary"]]
         if len(sections) > 60 or (total_adds + total_dels) > 8000:
             scope_truncated = True
@@ -2087,23 +2210,27 @@ def build(args):
             copy_targets = [s["path"] for s in non_deleted]
         head_root = os.path.join(bundle_dir, "head")
         os.makedirs(head_root, exist_ok=True)
-        _, failed_copies = copy_snapshot_files(clone, head_sha, copy_targets, head_root, owner, repo)
+        if target_mode in UNCOMMITTED_MODES:
+            _, failed_copies = copy_worktree_files(clone, target_mode, copy_targets, head_root)
+        else:
+            _, failed_copies = copy_snapshot_files(clone, head_sha, copy_targets, head_root, owner, repo)
         real_failed = [p for p in failed_copies if is_safe_relpath(p) and not is_denylisted(p)]
         if real_failed:
             coverage_limits.append(f"head snapshot unavailable for {len(real_failed)} file(s)")
 
-        max_ctx_files = 20 if effort == "high" else 10
-        max_ctx_loc = 3000 if effort == "high" else 1500
-        ctx_items = find_context_files(clone, head_sha, copy_targets, max_ctx_files, max_ctx_loc)
-        for cp, content in ctx_items:
-            dst = os.path.join(head_root, cp)
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            with open(dst, "w", encoding="utf-8", errors="replace") as fh:
-                fh.write(content)
-            context_paths.append(cp)
-        with open(os.path.join(bundle_dir, "context_files.txt"), "w", encoding="utf-8") as fh:
-            for cp in context_paths:
-                fh.write(cp + "\n")
+        if effort in ("high", "medium"):
+            max_ctx_files = 20 if effort == "high" else 10
+            max_ctx_loc = 3000 if effort == "high" else 1500
+            ctx_items = find_context_files(clone, head_sha, copy_targets, max_ctx_files, max_ctx_loc)
+            for cp, content in ctx_items:
+                dst = os.path.join(head_root, cp)
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                with open(dst, "w", encoding="utf-8", errors="replace") as fh:
+                    fh.write(content)
+                context_paths.append(cp)
+            with open(os.path.join(bundle_dir, "context_files.txt"), "w", encoding="utf-8") as fh:
+                for cp in context_paths:
+                    fh.write(cp + "\n")
 
     # Per-lane diff slicing & selection
     lane_manifest, lane_patches = slice_lanes(sections, signals)
@@ -2115,7 +2242,8 @@ def build(args):
     with open(os.path.join(lanes_dir, "manifest.json"), "w", encoding="utf-8") as fh:
         json.dump(lane_manifest, fh, indent=2)
 
-    persona = parse_persona_frontmatter(args.persona)
+    persona_path, persona_source = resolve_persona_path(args.persona)
+    persona = parse_persona_frontmatter(persona_path)
     small_pr = bool(
         args.inline
         or (
@@ -2131,6 +2259,7 @@ def build(args):
         "level": "PR",
         "gate_g0": "pass",
         "target_mode": target_mode,
+        "snapshot": snapshot,
         "bundle_dir": bundle_dir,
         "clone": clone,
         "pr": {
@@ -2149,6 +2278,10 @@ def build(args):
         },
         "effort": {"resolved": effort, "reason": effort_reason, "small_pr": small_pr},
         "persona": _persona_summary(persona),
+        "persona_path": persona_path,
+        "persona_source": persona_source,
+        "depth": depth_for(effort),
+        "interactive": not args.non_interactive,
         "signals": signals,
         "lane_plan": lane_plan,
         "lane_slices": {k: {"files": v["file_count"], "lines": v["changed_lines"], "patch": v["patch"]} for k, v in lane_manifest.items()},
@@ -2179,7 +2312,6 @@ def normalize_argv(argv):
 
 
 def main(argv=None):
-    default_persona = os.path.normpath(os.path.join(SCRIPT_DIR, "..", "reference", "persona.md"))
     ap = argparse.ArgumentParser(prog="build_bundle.py", description=__doc__.splitlines()[0])
     ap.add_argument("target", nargs="?")
     ap.add_argument("--level", type=str.upper, choices=REVIEW_LEVELS, default="PR")
@@ -2193,7 +2325,10 @@ def main(argv=None):
     ap.add_argument("--inline", action="store_true")
     ap.add_argument("--no-tier", action="store_true")
     ap.add_argument("--spec", action="append", default=[])
-    ap.add_argument("--persona", default=default_persona)
+    ap.add_argument("--persona", default=None,
+                    help="persona file. Default: ~/.claude/review/persona.md when it exists, else the skill template")
+    ap.add_argument("--non-interactive", action="store_true", dest="non_interactive",
+                    help="the review asks no question, never posts, and ends with a JSON result block")
     ap.add_argument("--reviews-dir", default=DEFAULT_REVIEWS_DIR)
     ap.add_argument("--local-only", action="store_true")
     ap.add_argument("--shard-max-files", type=int, default=CODEBASE_SHARD_MAX_FILES)

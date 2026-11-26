@@ -15,6 +15,8 @@ emphasis: []           # e.g. [security, backward-compatibility, test-coverage, 
 
 # Reviewer persona and preferences
 
+This file is the template. The live persona is `~/.claude/review/persona.md`. Never write preferences to this file.
+
 This file configures the review persona and stores learned user preferences. With `status: empty` and no rules in §8 or §9, the review uses no persona voice and no custom rules. Users can configure this file interactively via `/review` or edit it directly, setting `status: draft` (shown in the report footer) or `approved`, and updating `refreshed`.
 
 Rules for this file:

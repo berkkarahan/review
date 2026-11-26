@@ -140,8 +140,8 @@ def run_e2e_integration():
         p_f1 = run_cmd([sys.executable, "-I", "-B", mf_py, "finalize", b1, "--carry"])
         chk("e2e PR Round 1 finalize --carry exits 0", p_f1.returncode == 0, p_f1.stderr)
         f1_out = json.loads(p_f1.stdout)
-        chk("e2e PR Round 1 verdict is APPROVE WITH COMMENTS",
-            f1_out.get("valid") and f1_out.get("verdict") == "APPROVE WITH COMMENTS", f1_out)
+        chk("e2e PR Round 1 verdict is REQUEST CHANGES (an open HIGH blocks at every effort)",
+            f1_out.get("valid") and f1_out.get("verdict") == "REQUEST CHANGES" and f1_out.get("next_step") == "fix", f1_out)
 
         p_br1 = run_cmd([sys.executable, "-I", "-B", br_py, os.path.join(b1, "breaker-input.json")])
         chk("e2e PR Round 1 breaker standalone replay matches",

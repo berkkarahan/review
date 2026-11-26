@@ -1,6 +1,6 @@
 # Gates
 
-A gate is a check with a pass condition and a fixed action on failure. Gates keep noise out of the report. Run them in the phase shown. Where a script is named, run the script. Do not judge by eye what a script can decide.
+A gate is a check with a pass condition and a fixed action on failure. Gates keep noise out of the report. Run them in the phase shown. Where a script is named, run the script. Do not judge by eye what a script can decide. Two gates are model judgement by design: G6 (which non-blocking items the repo linter already covers: `drop-g6` records them and refuses CRITICAL/HIGH) and G7 (the ranking inside the comment budget, which never cuts CRITICAL/HIGH).
 
 All scripts are in `scripts/` and use the Python standard library only. They read JSON. Phase 1 lanes return compact JSON blocks directly; `scripts/merge_findings.py merge` automates Gates G1–G5, pruning, dedupe, `skim` filtering, and verify/eval partitioning in one command, `scripts/merge_findings.py drop-g6` (or `finalize --g6-drop`) records deterministic Gate G6 drops, and `scripts/merge_findings.py finalize` automates verification application, safety-floor enforcement, Gate G9 Carry, Breaker, and `medium` Pareto cuts.
 
@@ -10,7 +10,7 @@ All scripts are in `scripts/` and use the Python standard library only. They rea
 | G0b Draft, bot, size | Phase 0 | None of: draft, bot author, lockfile-only (`level=PR` only; skipped at `level=CODEBASE`). | Draft: note it in Context. Bot or lockfile-only: use `skim` unless the user set `--effort`. | `scripts/build_bundle.py` |
 | G1 Schema | Phase 2.1 | Required fields exist and enums are valid. | Retry the lane once. Then `NOT ASSESSED`. | `scripts/merge_findings.py merge` (`schema_lint.py`) |
 | G2 Scope & location | Phase 2.1 | At `level=PR` (default): `location` sits on an added line of `diff.patch` (intent-only locations allowed for intent lanes only; `open.json` re-raised IDs exempt from out-of-diff drop; out-of-diff sites in `locations` are pruned). At `level=CODEBASE`: `location` sits on a valid file and line range in `file-map.json` (pre-existing code is in scope). | `drop`: discard the finding and count it under `out-of-diff` (at `PR`) or `invalid-location` (at `CODEBASE`). | `scripts/build_bundle.py` (`diff_map.py` / `file-map.json`) + `scripts/merge_findings.py merge` |
-| G3 Trigger | Phase 2.1 | CRITICAL and HIGH have a concrete `trigger` (`"n/a (convention)"` allowed only for `conventions`). | Cap severity at `MEDIUM`, or `QUESTION` when `confidence` is `LOW` (dropped at `effort=skim` if downgraded to `MEDIUM`). | `scripts/merge_findings.py merge` (`schema_lint.py`) |
+| G3 Trigger | Phase 2.1 | CRITICAL and HIGH have a concrete `trigger` (`"n/a (convention)"` allowed only for `conventions`). | Cap severity at `MEDIUM`, or `QUESTION` when `confidence` is `LOW`. | `scripts/merge_findings.py merge` (`schema_lint.py`) |
 | G4 Confidence | Phase 2.1 | No MEDIUM or LOW finding has LOW confidence. | Drop it and count it in `low-confidence`. | `scripts/merge_findings.py merge` (`schema_lint.py`) |
 | G5 Already raised | Phase 2.1 | No existing inline comment (same file, within 5 lines, ≥ 0.35 word overlap) or review body (file path mention + flaw overlap) covers the same non-blocking flaw (`level=PR` only; CRITICAL and HIGH are exempt; skipped at `level=CODEBASE`). | Drop it. Add one line to Context: "Already raised: <n>". | `scripts/merge_findings.py merge` (`existing-comments.json`) |
 | G6 Linter covers it | Phase 2.1 | The finding is not a style, format or import-order point, and not a rule that the repo's lint or type CI job enforces. | Drop non-blocking items via `merge_findings.py drop-g6` / `--g6-drop` (`g6_linter`). Never drop `CRITICAL`/`HIGH`. | `statusCheckRollup` in `pr.json` (`level=PR`), and the repo's lint config |
@@ -43,9 +43,11 @@ Write no names, handles, comment text or code. Run `python3 scripts/precision.py
 
 ### Preference / memory acquisition (when configured)
 
-Read the `memory` setting in `reference/persona.md` frontmatter (`enabled` | `ask` | `disabled`, default `ask`):
-- **`disabled`**: do not gather or save preferences into `reference/persona.md`.
+Read the `memory` setting in the persona file (`persona_path` in `bundle-summary.json`) frontmatter (`enabled` | `ask` | `disabled`, default `ask`):
+- **`disabled`**: do not gather or save preferences into the persona file.
 - **`ask` or `enabled`**: when the user drops findings with a generalizable reason, corrects a review assumption, or states a preference about what to emphasize, ignore, or how to communicate:
-  1. Formulate a concise, PII-free preference entry for `reference/persona.md` (§8 "House rules" for an objective diff check, or §9 "Learned preferences" for `[check | suppress | emphasis | tone]`).
-  2. If `memory: ask`, ask the user before writing to `reference/persona.md`. When the question references a dropped finding ID or rule ID (for example `M1` or `§9 #2`), include at most 1 STE sentence explaining what that item is ("`M1` flagged missing docstrings on internal test helpers. Save this suppression rule to `reference/persona.md` for future reviews?").
-  3. If `memory: enabled`, save the preference to `reference/persona.md`, update `refreshed`, and state the saved rule in one STE line in chat.
+  1. Formulate a concise, PII-free preference entry for the persona file (§8 "House rules" for an objective diff check, or §9 "Learned preferences" for `[check | suppress | emphasis | tone]`).
+  2. If `memory: ask`, ask the user before writing to `~/.claude/review/persona.md`. When the question references a dropped finding ID or rule ID (for example `M1` or `§9 #2`), include at most 1 STE sentence explaining what that item is ("`M1` flagged missing docstrings on internal test helpers. Save this suppression rule to `~/.claude/review/persona.md` for future reviews?").
+  3. If `memory: enabled`, save the preference to `~/.claude/review/persona.md`, update `refreshed`, and state the saved rule in one STE line in chat.
+
+**Write rule.** Write preferences only to `~/.claude/review/persona.md`. If it does not exist, create `~/.claude/review/` and copy `<skill_dir>/reference/persona.md` there first. Never write under `<skill_dir>/reference/`. In non-interactive mode, gather and save nothing.

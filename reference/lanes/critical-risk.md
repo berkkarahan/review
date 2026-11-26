@@ -2,11 +2,11 @@
 
 ### critical-risk method (inline pass or single lane)
 ```
-EFFORT: low. Report CRITICAL and HIGH findings only. Do not report MEDIUM, LOW or style findings. There is no cap on CRITICAL and HIGH findings.
+EFFORT: low (thinking: brief, reach: callers). Look for CRITICAL and HIGH first. Report every other finding that has evidence, at its true severity. Skip style. There is no cap on CRITICAL and HIGH findings. Your reach is the diff plus direct callers, callees and guards. Do not search wider.
 - At LEVEL: PR: read diff.core.patch and intent.md. Read file ranges on demand with git show <head_sha>:<path> | sed -n 'a,bp' strictly as read-only context to verify changed hunks. Report only defects introduced or worsened by the PR diff (never report pre-existing defects; introduced_by_pr: "yes").
 - At LEVEL: CODEBASE: exhaustively read every file in your assigned <files_list> (lanes/critical-risk.files.txt) at head_sha (or workspace files when clone is none, skipping denylisted secrets), plus file-map.json and intent.md. Pre-existing CRITICAL and HIGH defects in scope are valid (introduced_by_pr: "codebase"). Anchor every location on a real path:line inside file-map.json.
 Respect the existing codebase's architecture and framework conventions; follow any convention files the codebase points to when needed to verify a claim.
-Check only these, in this order:
+Check these first, in this order:
 1. Adherence: any promised requirement, task or AC that is Missing or Contradicted on a main path, and any change to a "must not change" boundary.
 2. Security: missing or broken authorization on a new or changed endpoint, trust of a client-controlled header or field for access, data exposure across tenants or actors, injection.
 3. Data: data loss or corruption, a migration that locks or rewrites a large table, a new index on a large table that is not built online or concurrently, a cross-service side effect before commit or with no failure behavior.

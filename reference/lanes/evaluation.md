@@ -6,13 +6,13 @@ Specialist Phase 1 lanes are candidate generators and are never taken for grante
 
 - **At `high` and `medium`:** Launch one `general-purpose` `evaluation` subagent (on `standard`/`inherit` tier) **in parallel in the same message** as the Phase 2.2 Blind Verifiers whenever `<bundle_dir>/nonblocking-candidates.json` has ≥ 1 `MEDIUM`, `LOW`, or `QUESTION` candidate.
   - Because `MEDIUM` findings are evaluated here, the evaluator also performs the concise evidence spot-check (re-reading the cited diff hunk or file range + one caller/guard) previously done serially by the lead — dropping any `MEDIUM` whose evidence does not hold.
-  - After the parallel wave finishes, `scripts/merge_findings.py finalize` enforces the safety floor on verified `CRITICAL`/`HIGH` findings and flags any remaining non-floor confirmed `HIGH` or verifier-downgraded `QUESTION` in `eval_followup_needed` for a quick inline rubric check by the lead in Phase 2.3 (avoiding an extra sequential subagent round-trip).
+  - After the parallel wave finishes, `scripts/merge_findings.py finalize` enforces the safety floor on verified `CRITICAL`/`HIGH` findings and flags any `plausible` or `unverified` CRITICAL/HIGH, any remaining non-floor confirmed `HIGH`, and any verifier-downgraded `QUESTION` in `eval_followup_needed` for a quick inline rubric check by the lead in Phase 2.3 (avoiding an extra sequential subagent round-trip).
 - **At `low` and `skim`:** Apply the same rubric inline (no subagent) when candidate findings exist.
 - If zero non-blocking candidates exist, skip launching the `evaluation` subagent and `merge_findings.py finalize` records `evaluation` as `abstained` (`no candidate findings evaluated by subagent`), while any `eval_followup_needed` items are evaluated inline.
 
 ## Evaluation rubric
 
-Evaluate every candidate finding against `<bundle_dir>/diff.patch` + `<bundle_dir>/diff-map.json` (at `PR`) or `<bundle_dir>/file-map.json` (at `CODEBASE`), `<bundle_dir>/intent.md`, and `<skill_dir>/reference/persona.md` (§1, §2, §6, §8, §9):
+Evaluate every candidate finding against `<bundle_dir>/diff.patch` + `<bundle_dir>/diff-map.json` (at `PR`) or `<bundle_dir>/file-map.json` (at `CODEBASE`), `<bundle_dir>/intent.md`, and the persona file `<persona_path>` (§1, §2, §6, §8, §9):
 
 1. **Scope & Validity (`out_of_diff_scope` at `PR` | `invalid_location` at `CODEBASE`).**
    - **At `level=PR` (default):** Confirm that the defect was directly introduced or worsened by `diff.patch`. Drop any finding that critiques pre-existing code, untouched callers, or out-of-PR epic requirements disguised via an adjacent touched line. Exception: if a diff edit breaks an untouched caller, the finding stays only when `location` is anchored on the changed diff line that caused the break.
@@ -28,6 +28,8 @@ Evaluate every candidate finding against `<bundle_dir>/diff.patch` + `<bundle_di
 4. **Severity Calibration (`adjusted_severity`).**
    - When a lane inflated a non-floor finding's severity (for example, marking a localized maintainability preference `HIGH` or a tiny nit `MEDIUM`), set `adjusted_severity` to `MEDIUM`, `LOW`, or `QUESTION` (`eval_downgraded: true`) and state why in `eval_reason`.
    - **Confirmed `CRITICAL`/`HIGH` rule:** Neither `merge_findings.py` nor `breaker.py` allows directly setting `disposition: "drop"` or `"chat-only"` on a `verified: "confirmed"` `CRITICAL` or `HIGH` finding while it remains `CRITICAL`/`HIGH`. For a **non-floor confirmed `HIGH`** (e.g., localized `code-quality`/`conventions` `HIGH` without security, secret, data-loss/corruption, unmigrated breaking, or `ac_ref` impact), lower its severity with `adjusted_severity: "MEDIUM"` or `"LOW"` (and concise `eval_reason`) while keeping `"disposition": "post"`.
+
+**Plausible and unverified CRITICAL/HIGH.** A CRITICAL or HIGH with `verified: plausible` or `verified: unverified` has no safety floor, but `merge_findings.py finalize` still never lets you set `disposition: drop` or `chat-only` on it. If you think it is inflated, calibrate it with `adjusted_severity` (only a non-floor finding can be lowered) and say why in `eval_reason`. `finalize` lists these findings in `eval_followup_needed`.
 
 ## Safety floor (strictly enforced by `merge_findings.py finalize` and `breaker.py`)
 
@@ -54,7 +56,7 @@ BUNDLE (read-only): <bundle_dir>
   nonblocking-candidates.json candidate MEDIUM/LOW/QUESTION findings (+ non-Met ac_matrix rows)
   head/<path>                 read-only lookup context at head_sha (at PR; at CODEBASE read via git show <head_sha>:<path>, or workspace files when clone is none skipping denylisted secrets)
 PERSONA PRIORITIES (content sections only; ignore voice/tone):
-  <skill_dir>/reference/persona.md (§1, §2, §6, §8, §9 — skip if persona status is empty and §8/§9 have no rules)
+  <persona_path> (from bundle-summary.json) (§1, §2, §6, §8, §9 — skip if persona status is empty and §8/§9 have no rules)
 METHOD:
   1. Read <skill_dir>/reference/lanes/evaluation.md §Evaluation rubric and §Safety floor.
   2. For each candidate, read its diff hunk (at PR) or cited file range (at CODEBASE), plus one caller/guard at head_sha for MEDIUM items.

@@ -2,7 +2,7 @@
 
 ## Persona pass (Phase 3)
 
-Input: evaluated findings (`eval_disposition: post` and `eval_disposition: chat-only`), plus `reference/persona.md`. **Zero-finding fast path:** when `zero_findings_fast_path` is `true` (zero `post` and zero `chat-only` findings with verdict `APPROVE` at `level=PR` or `HEALTHY` at `level=CODEBASE`), skip this file, `persona.md` body, and `ste-examples.md` completely and render the concise STE report directly. Keep `chat-only` items strictly under `Not posted (chat only):` (`Additional notes (chat only):` at `level=CODEBASE`) in chat and never promote them to posted PR comments. If `persona.md` is missing or has `status: empty` and no learned preferences in §9, use the default neutral voice: write in STE (`output/ste.md` §Simplified Technical English), concise and direct, with no filler.
+Input: evaluated findings (`eval_disposition: post` and `eval_disposition: chat-only`), plus the persona file (`persona_path` in `bundle-summary.json`). **Zero-finding fast path:** when `zero_findings_fast_path` is `true` (zero `post` and zero `chat-only` findings with verdict `APPROVE` at `level=PR` or `HEALTHY` at `level=CODEBASE`), skip this file, `persona.md` body, and `ste-examples.md` completely and render the concise STE report directly. Keep `chat-only` items strictly under `Not posted (chat only):` (`Additional notes (chat only):` at `level=CODEBASE`) in chat and never promote them to posted PR comments. If `persona.md` is missing or has `status: empty` and no learned preferences in §9, use the default neutral voice: write in STE (`output/ste.md` §Simplified Technical English), concise and direct, with no filler.
 
 1. **Re-rank** within each severity by the persona's `emphasis` list, §1 ("What they consistently flag"), §6 ("Business and domain priorities"), and §9 ("Learned preferences" with type `emphasis` or `check`).
 2. **Display folding only (never drop after `breaker.py`).** Phase 3 runs after `merge_findings.py finalize` and `breaker.py`, so it never drops findings or reclassifies `post` findings as `chat-only` (suppression and `chat-only` routing happen earlier in Phase 1 `conventions` and Phase 2.2 Gate G10 `evaluation`, before the verdict is computed). For `LOW` findings matching §2 ("What they let slide"), Phase 3 may fold them visually onto one line while keeping each item's `path:line`:
@@ -28,7 +28,7 @@ Input: evaluated findings (`eval_disposition: post` and `eval_disposition: chat-
    The rewrite changes only presentation and structure:
    - Keep the technical claim, the evidence, and the fix intact. Each `path:line`, identifier, number, and fix action must remain in the text.
    - Do not add opinions, jokes, or phrases that `persona.md` does not support.
-   - Gate G4 drops `MEDIUM`/`LOW` findings with `LOW` confidence, and `breaker.py` downgrades unverified `CRITICAL`/`HIGH` findings to `QUESTION` before Phase 3; for `QUESTION` or `MEDIUM`-confidence items, keep tone neutral and factual.
+   - Gate G4 drops `MEDIUM`/`LOW` findings with `LOW` confidence, and `finalize` turns a verifier `unclear` into a `QUESTION` before Phase 3. A `plausible` or `unverified` `CRITICAL`/`HIGH` keeps its level and its tag in the report; for `QUESTION` or `MEDIUM`-confidence items, keep tone neutral and factual.
 5. **Language and spelling.** Use American English (Merriam-Webster), because ASD-STE100 requires it. This applies regardless of `voice.spelling`. Verbatim items (`output/ste.md` §Simplified Technical English) remain unchanged.
 6. **Opening and closing.** Use the fixed STE verdict phrases for the verdict line. Add no greeting and no sign-off. The only closing line is the STE acknowledgement at the end of the posted PR review body (`output/posting.md` §Posting step 3).
 7. **Safety floor.** A verified `CRITICAL` or `HIGH` correctness, security, data-loss/corruption, unmigrated-breaking, or `ac_ref` finding cannot be dropped, folded, or softened below the blocking heading. It can only be reworded.
@@ -43,11 +43,11 @@ Input: evaluated findings (`eval_disposition: post` and `eval_disposition: chat-
 ## Interactive persona and preference configuration (via `/review`)
 
 When the user invokes `/review` to configure or update their persona or preferences (or asks to set up their review persona):
-1. Read `reference/persona.md`.
+1. Read the persona file (`persona_path` in `bundle-summary.json`). If `~/.claude/review/persona.md` does not exist, create `~/.claude/review/` and copy `<skill_dir>/reference/persona.md` there first.
 2. Ask the user (or apply what they already stated in their prompt) for:
    - **Tone of communication (`voice.tone`)**: `direct`, `constructive`, `mentor`, `strict`, or `concise` (and optionally `voice.hold_event`, `voice.max_inline`, `voice.comment_prefix`, `voice.nit_prefix`, `voice.emoji`).
    - **PR emphasis (`emphasis` and §1/§6)**: which concerns matter most on PRs (for example `security`, `backward-compatibility`, `test-coverage`, `performance`, `domain-modeling`).
    - **What to let slide (§2)**: minor items to ignore in Phase 1/2.2 or fold in chat.
    - **House rules (§8)**: objective yes/no checks to run on every diff.
    - **Memory acquisition (`memory`)**: `enabled`, `ask`, or `disabled`.
-3. Update `reference/persona.md` with `status: approved` (or `draft` if the user wants to test it first), update §7 Provenance, and set `refreshed` to today's `YYYY-MM-DD`. Write no personal names, emails, or `@handles`.
+3. Update `~/.claude/review/persona.md` (never anything under `<skill_dir>/reference/`) with `status: approved` (or `draft` if the user wants to test it first), update §7 Provenance, and set `refreshed` to today's `YYYY-MM-DD`. Write no personal names, emails, or `@handles`.

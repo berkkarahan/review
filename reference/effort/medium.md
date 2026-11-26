@@ -9,7 +9,7 @@ The goal is to spend review effort where most of the risk is (Pareto: the vital 
 - Build the full intent pack.
 
 ### Lane selection
-- **Cap: 3 lanes.** Keep the `high` priority order (`adherence` → `code-quality` → `conventions` → `security` → `performance` → `compatibility` → `robustness`, skipping unconditional `code-quality`/`conventions` when `lanes/selection.md` §Selection does not trigger them, with `persona.md` `emphasis` boosting matching conditional lanes).
+- **Cap: 3 lanes.** Keep the `high` priority order (`adherence` → `code-quality` → `conventions` → `security` → `performance` → `compatibility` → `robustness`, skipping unconditional `code-quality`/`conventions` when `lanes/selection.md` §Selection does not trigger them, with the persona file `emphasis` boosting matching conditional lanes).
 - Use one `adherence` lane for all PR-relevant specs/plans (or shards at `CODEBASE`).
 - Fold each dropped triggered lane into `conventions` (or `code-quality` if `conventions` is inactive), with one line per concern + its checklist path (`lanes/prompt.md`):
   - security: "also check authorization on each new or changed endpoint, trust of client input and headers, and data exposure across tenants or actors (`<skill_dir>/reference/lanes/checklist-security.md`)"
@@ -40,9 +40,9 @@ The lead fills in the signal line, because a lane that reads only bundle files m
    - Severity weight: CRITICAL 8, HIGH 5, MEDIUM 3, QUESTION 2, LOW 1.
    - Confidence weight: HIGH 1.0, MEDIUM 0.7, LOW 0.4.
    - Reach: 1.5 when the finding touches `breaking`, `ac_ref`, or a main/shared/auth/data/public path (`location`). Otherwise 1.0.
-2. Sort by score, highest first, breaking ties by severity (and persona `emphasis` when supported).
+2. Sort by score, highest first, breaking ties by severity (and the persona `emphasis` when supported).
 3. Keep the smallest top set whose scores add up to at least 80% of the total score. Always keep every verified CRITICAL and HIGH, even past this point.
-4. Report at most 10 non-blocking non-QUESTION findings and 3 QUESTION findings from the kept set, in addition to all confirmed CRITICAL and HIGH.
+4. Report at most 10 non-blocking non-QUESTION findings and 3 QUESTION findings from the kept set, in addition to all CRITICAL and HIGH (confirmed, plausible and unverified).
 5. List the cut titles (`pareto.json` `cut_titles`) and the lanes' `"other"` titles in one line: "Other items that this review did not examine in depth: <a>, <b>, <c>." Keep this line in chat only. Do not post it to PRs.
 
 ### Quality gate

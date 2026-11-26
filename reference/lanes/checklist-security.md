@@ -11,3 +11,8 @@
 - Secrets and config: a secret in the diff, a weakened security setting, debug left on, permissive CORS.
 - Dependencies: a new dependency with no reason, a version downgrade, an unpinned version, a changed registry or integrity hash.
 - Rate and abuse: a new expensive or enumerable endpoint with no limit.
+
+**Repository security checklist.** When the repo has a security checklist (for example `SECURITY.md`, a `docs/security*` file, or a file that a rule file points to), read it at the base version (`base/<path>` when `rules-changed.txt` lists it, else at `head_sha`). For each section:
+- State whether the diff falls within it.
+- Apply every item of each matching section to the diff.
+Write in `coverage`: `checklist: <path>; applied: <section names>; not applicable: <section names>`. When no section applies, write `checklist: <path>; no section applies`. A breach cites the checklist `path` and the section in `issue`.

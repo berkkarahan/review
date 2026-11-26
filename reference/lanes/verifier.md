@@ -18,6 +18,9 @@ REPO: <owner>/<repo>  head <head_sha>  scope <scope_path>. BUNDLE: <bundle_dir> 
 CLAIMS: <paste batch.claims from verify-batches.json — id, location, one-sentence claim, trigger only>
 METHOD: For each claim, read the cited code at head_sha, trace one caller or one guard (git -C <clone> grep/show at head_sha; never the dirty working tree when a clone exists; use gh api if no clone in PR mode), and look for a covering test. Decide whether the trigger really produces the wrong result, whether a guard elsewhere prevents it, and — for AC claims — whether intent.md really requires what the claim says.
 RETURN: exactly one fenced ```json array:
-[{"id":"<id>","verdict":"confirmed|refuted|unclear","reason":"<=2 sentences with path:line evidence","severity_note":null}]
-(Set severity_note to "severity-too-high" or "severity-too-low" only when evidence shows the real impact differs from the claim. Note: confirmed floor findings are protected from Phase 2.2b evaluation downgrades in merge_findings.py finalize.)
+[{"id":"<id>","verdict":"confirmed|plausible|refuted|unclear","reason":"<=2 sentences with path:line evidence","severity_note":null}]
+(Set severity_note to "severity-too-high" or "severity-too-low" only when evidence shows the real impact differs from the claim. Note: confirmed floor findings are protected from Gate G10 evaluation (Phase 2.2) downgrades and from the Phase 2.3 follow-up in merge_findings.py finalize.)
+VERDICTS: confirmed = the cited code, a traced caller or guard, and the trigger together produce the wrong result. plausible = the code path exists and nothing refutes it, but the result depends on input, config or state that the code cannot show. refuted = a guard, caller, type or test proves the claim false (give path:line). unclear = the claim cannot be checked (the code cannot be read, or the claim is ambiguous).
+DEPTH: thinking=<depth.thinking>, reach=<depth.reach>. Read only what you need to decide each claim.
+When target_mode is staged or uncommitted, read changed files only from head/<path>, never git show <head_sha>:<path>.
 ```

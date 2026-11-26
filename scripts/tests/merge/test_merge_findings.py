@@ -270,7 +270,7 @@ def run_tests():
             rc_g6 == 0 and set(g6_doc["dropped"]) == {"l-2", "l-3"} and g6_doc["skipped_blocking"] == ["h-1"]
             and g6_doc["gate_counts"]["g6_linter"] == 2, g6_doc)
 
-        # Test skim effort drops MEDIUM/LOW (including G3-downgraded HIGH -> MEDIUM) & single-lane dict raw-lanes
+        # Test skim effort keeps MEDIUM/LOW (effort never filters findings) & single-lane dict raw-lanes
         td_sk = os.path.join(td, "skim")
         os.makedirs(td_sk)
         write_json(os.path.join(td_sk, "diff-map.json"), dmap)
@@ -293,9 +293,10 @@ def run_tests():
         skm = json.loads(out_skm)
         rc_skf, out_skf, _ = run_mf(["finalize", td_sk, "--effort", "skim"])
         skf = json.loads(out_skf)
-        chk("skim single-lane dict parsed & MEDIUM/G3-downgraded items dropped cleanly for valid breaker",
-            rc_skm == 0 and skm["gate_counts"]["skim_dropped"] == 2 and rc_skf == 0 and skf["valid"]
-            and skf["verdict"] == "APPROVE WITH COMMENTS" and skf["counts"]["post"] == 1, (skm, skf))
+        chk("skim single-lane dict parsed & MEDIUM/G3-downgraded items are kept (effort never filters findings)",
+            rc_skm == 0 and skm["gate_counts"]["skim_dropped"] == 0 and rc_skf == 0 and skf["valid"]
+            and skf["verdict"] == "APPROVE WITH COMMENTS" and skf["counts"]["post"] == 3
+            and skf["next_step"] == "document", (skm, skf))
 
         # Test dedupe field preservation, swapped locations[], INTENT_LOC dedupe, and HUNK_LOC support
         td_dd = os.path.join(td, "dedupe")
@@ -610,6 +611,55 @@ def run_tests():
         rc_inv, _, err_inv = run_mf(["finalize", td_err])
         chk("finalize exits 1 and prints INVALID: to stderr when breaker fails",
             rc_inv == 1 and "INVALID:" in err_inv, (rc_inv, err_inv))
+
+
+        # Verification outcomes: plausible and unverified CRITICAL/HIGH keep their level and count at every effort
+        for eff in ("high", "low"):
+            td_v = os.path.join(td, f"verify-{eff}")
+            os.makedirs(td_v)
+            write_json(os.path.join(td_v, "diff-map.json"), dmap)
+            write_json(os.path.join(td_v, "existing-comments.json"), {"inline": [], "reviews": []})
+            write_json(os.path.join(td_v, "bundle-summary.json"), {
+                "effort": {"resolved": eff},
+                "pr": {"owner": "octo", "repo": "demo", "number": 21, "head_sha": "d" * 40, "author_is_me": False},
+                "lane_plan": {"folded": []}, "rules_changed": [],
+            })
+            lane_name = "code-quality" if eff == "high" else "critical-risk"
+            write_json(os.path.join(td_v, "raw-lanes.json"), {
+                lane_name: {"lane": lane_name, "findings": [
+                    make_f("v-1", lane_name, "HIGH", "a.py:10", "Plausible high", "Result depends on runtime config."),
+                    make_f("v-2", lane_name, "HIGH", "a.py:11", "No verifier result", "Nobody checked this one."),
+                    make_f("v-3", lane_name, "HIGH", "a.py:12", "Confirmed high", "Verified by a verifier."),
+                ]},
+            })
+            write_json(os.path.join(td_v, "verifier-results.json"), [
+                {"id": "v-1", "verdict": "plausible", "reason": "Path exists; config not visible."},
+                {"id": "v-3", "verdict": "confirmed", "reason": "a.py:12 confirms it."},
+            ])
+            run_mf(["merge", td_v, "--effort", eff])
+            rc_v, out_v, _ = run_mf(["finalize", td_v, "--effort", eff])
+            sv = json.loads(out_v)
+            fz = json.load(open(os.path.join(td_v, "findings.json")))
+            by_id = {f["id"]: f for f in (fz.get("findings") or [])} if isinstance(fz, dict) else {}
+            vmap = {f.get("title"): (f.get("verified"), f.get("severity")) for f in by_id.values()}
+            chk(f"{eff}: plausible keeps HIGH, missing verifier result is unverified, confirmed stays confirmed",
+                rc_v == 0 and vmap.get("Plausible high") == ("plausible", "HIGH")
+                and vmap.get("No verifier result") == ("unverified", "HIGH")
+                and vmap.get("Confirmed high") == ("confirmed", "HIGH"), (vmap, sv))
+            chk(f"{eff}: plausible and unverified HIGH need an evaluation follow-up, verdict is REQUEST CHANGES, next_step fix",
+                {e["title"] for e in sv["eval_followup_needed"]} >= {"Plausible high", "No verifier result"}
+                and sv["verdict"] == "REQUEST CHANGES" and sv["next_step"] == "fix", sv)
+
+            # Evaluation cannot drop or hide a plausible/unverified HIGH
+            write_json(os.path.join(td_v, "eval-results.json"), {"lane": "evaluation", "evaluations": [
+                {"id": "v-1", "disposition": "drop", "reason_code": "low_signal", "eval_reason": "Try to drop."},
+                {"id": "v-2", "disposition": "chat-only", "reason_code": "info_only", "eval_reason": "Try to hide."},
+            ]})
+            rc_v2, out_v2, _ = run_mf(["finalize", td_v, "--effort", eff])
+            sv2 = json.loads(out_v2)
+            chk(f"{eff}: evaluation drop/chat-only on plausible/unverified HIGH is overridden to post",
+                rc_v2 == 0 and sv2["counts"]["post"] == 3 and sv2["counts"]["dropped_by_eval"] == 0
+                and sv2["counts"]["chat_only"] == 0 and len(sv2["floor_overrides"]) >= 2, sv2)
 
     fails = 0
     for name, ok, detail in checks:

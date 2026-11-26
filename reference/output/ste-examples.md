@@ -1,6 +1,6 @@
 # STE: persona phrase mapping and examples
 
-**Persona phrase mapping.** The persona decides what to flag, the order, the severity and the length. STE decides the words. Use this table when a persona phrase (`persona.md` §3–§5) does not agree with STE:
+**Persona phrase mapping.** The persona decides what to flag, the order, the severity and the length. STE decides the words. Use this table when a persona phrase (persona file §3–§5) does not agree with STE:
 
 | Persona form | STE form |
 |---|---|

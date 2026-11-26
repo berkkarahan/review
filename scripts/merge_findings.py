@@ -770,11 +770,6 @@ def cmd_merge(args):
 
             f["in_diff"] = in_diff_flag
 
-            # Enforce skim non-blocking drop (including G3-downgraded HIGH->MEDIUM)
-            if effort == "skim" and f.get("severity") in ("MEDIUM", "LOW"):
-                counts["skim_dropped"] += 1
-                continue
-
             # Gate G5 (already raised — PR mode only)
             if level == "PR" and matches_existing_comment(f, existing):
                 counts["g5_already_raised"] += 1
@@ -952,7 +947,7 @@ def pareto_cut(findings, emphasis=None):
     non_blocking_count = 0
     q_count = 0
     for score, _idx, f in scored:
-        is_blocking = f.get("severity") in ("CRITICAL", "HIGH") and f.get("verified") == "confirmed"
+        is_blocking = f.get("severity") in ("CRITICAL", "HIGH")  # plausible and unverified items also stay visible
         if is_blocking:
             kept.append(f)
             cum += score
@@ -1085,6 +1080,10 @@ def cmd_finalize(args):
             if verdict == "unclear":
                 f["verified"] = "unverified"
                 f["severity"] = "QUESTION"
+            elif verdict == "plausible":
+                # Not refuted, but the trigger depends on input, config or state that the code cannot show.
+                # The severity stays. The finding has no safety floor.
+                f["verified"] = "plausible"
             elif verdict == "confirmed":
                 f["verified"] = "confirmed"
                 snote = str(v.get("severity_note") or "").lower()
@@ -1097,8 +1096,10 @@ def cmd_finalize(args):
                         verifier_downgraded_ids.add(fid)
                 elif snote == "severity-too-low":
                     f["severity"] = SEV_UP[f["severity"]]
-        elif f.get("severity") in ("CRITICAL", "HIGH") and effort in ("low", "skim"):
-            f.setdefault("verified", "confirmed")
+        elif f.get("severity") in ("CRITICAL", "HIGH"):
+            # No verifier result at any effort: the finding was not checked. It still counts for the
+            # verdict, and it has no safety floor.
+            f.setdefault("verified", "unverified")
         post_verify.append(f)
 
     # Update AC matrix if verifiers refuted an AC
@@ -1154,15 +1155,17 @@ def cmd_finalize(args):
         ev = e_by_id.get(fid)
         is_floor = breaker.is_floor_protected(f)
         is_confirmed_blocking = f.get("verified") == "confirmed" and f.get("severity") in ("CRITICAL", "HIGH")
+        is_blocking_sev = f.get("severity") in ("CRITICAL", "HIGH")
 
         if ev:
             disp = str(ev.get("disposition") or "post").strip().lower()
             reason = str(ev.get("eval_reason") or "").strip() or "evaluated"
             adj = ev.get("adjusted_severity")
 
-            if disp in ("drop", "chat-only") and is_confirmed_blocking:
+            if disp in ("drop", "chat-only") and is_blocking_sev:
                 disp = "post"
-                floor_overrides.append(f"{fid}: blocked evaluation {ev.get('disposition')} on confirmed {f['severity']}")
+                label = "confirmed" if is_confirmed_blocking else str(f.get("verified") or "unverified")
+                floor_overrides.append(f"{fid}: blocked evaluation {ev.get('disposition')} on {label} {f['severity']}")
             elif disp in ("drop", "chat-only"):
                 sole_ac = [ref for ref in (_ac_refs_of(f) & unsat_refs) if ac_ref_counts.get(ref, 0) <= 1]
                 if sole_ac:
@@ -1195,7 +1198,7 @@ def cmd_finalize(args):
             post_findings.append(f)
             if (
                 (f.get("severity") == "HIGH" and not is_floor)
-                or (f.get("severity") == "CRITICAL" and f.get("verified") != "confirmed" and effort in ("high", "medium"))
+                or (f.get("severity") in ("CRITICAL", "HIGH") and f.get("verified") in ("plausible", "unverified"))
                 or (f.get("verified") == "unverified" and f.get("severity") == "QUESTION")
                 or (fid in verifier_downgraded_ids)
             ):
@@ -1426,6 +1429,7 @@ def cmd_finalize(args):
         "emoji": verdict_out["emoji"],
         "phrase": verdict_out["phrase"],
         "event": verdict_out["event"],
+        "next_step": verdict_out.get("next_step"),
         "band": verdict_out["band"],
         "complete": verdict_out["complete"],
         "open": verdict_out["open"],

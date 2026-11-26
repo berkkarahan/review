@@ -1,8 +1,14 @@
 # Lane checklist: code-quality
 
-**Scope by `LEVEL`:** At `LEVEL: PR`, read and apply this checklist strictly to lines added, modified, or removed in `lanes/code-quality.patch` (inspect surrounding files and callers solely as read-only context to verify impact; report only defects introduced or worsened by this PR). At `LEVEL: CODEBASE`, read and apply this checklist exhaustively across every file in your assigned `<files_list>` at `head_sha` (pre-existing defects and improvements in scope are valid; set `introduced_by_pr: "codebase"`). Map each item to a `dimension` value.
+**Scope by `LEVEL`:** At `LEVEL: PR`, read and apply this checklist strictly to lines added, modified, or removed in `lanes/code-quality.patch` (read callers as context, and search for them in Step 1; report only defects introduced or worsened by this PR). At `LEVEL: CODEBASE`, read and apply this checklist exhaustively across every file in your assigned `<files_list>` at `head_sha` (pre-existing defects and improvements in scope are valid; set `introduced_by_pr: "codebase"`). Map each item to a `dimension` value.
 
 **Codebase and framework awareness:** Before raising any finding, inspect the existing codebase, surrounding modules, and any convention files or framework documentation that the codebase points to. Respect the project's established architecture, layering, error-handling idioms, and test conventions. Do not flag patterns that follow the existing codebase's conventions unless they cause a concrete defect.
+
+**Step 1 — Trace what the change breaks (`LEVEL: PR` only; do this before the checklist).** For each changed behavior in your patch (signature, return value or type, raised error, side effect, default value, removed or renamed symbol):
+1. Find every caller and entry point at `head_sha` (`git -C <clone> grep -n <symbol> <head_sha>`, or `head/` when there is no clone). Include routes, CLI commands, jobs, event handlers, templates and tests.
+2. For each caller, decide whether it still works with the new behavior.
+3. A caller that breaks is a finding. Anchor it on the diff line that causes the break (Gate G2). Name the caller `path:line` in `issue` and in `locations`.
+Add `traced: <n> behaviors, <m> callers` to `coverage`. When the patch changes no behavior that other code can reach, write `traced: none reachable`.
 
 **Code quality** (dimensions: correctness, design, readability, security hygiene, performance hygiene, testability, accessibility, error handling)
 - Correctness: wrong condition, off-by-one, null or empty case, wrong type or unit, broken invariant, dead branch.

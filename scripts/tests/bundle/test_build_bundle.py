@@ -747,6 +747,108 @@ def run_tests():
             and s_sc_carry["carry"]["scope_path"] == "src",
             (open_sc, prev_sc, s_sc_carry["carry"]))
 
+    # 9. Persona lookup, depth, non-interactive flag, staged and uncommitted targets
+    with tempfile.TemporaryDirectory() as td:
+        uh = os.path.join(td, "user-home")
+        tpl = os.path.join(td, "template.md")
+        write(td, "template.md", "---\nstatus: empty\n---\n")
+        chk("resolve_persona_path: template when no user file",
+            bb.resolve_persona_path(None, user_home=uh, template=tpl) == (tpl, "template"))
+        write(uh, "persona.md", "---\nstatus: approved\n---\n")
+        chk("resolve_persona_path: user file wins over template",
+            bb.resolve_persona_path(None, user_home=uh, template=tpl) == (os.path.join(uh, "persona.md"), "user"))
+        chk("resolve_persona_path: explicit path wins over user file",
+            bb.resolve_persona_path(os.path.join(td, "x.md"), user_home=uh, template=tpl)
+            == (os.path.join(td, "x.md"), "custom"))
+        chk("resolve_persona_path never writes the user home",
+            os.listdir(uh) == ["persona.md"] and os.path.isfile(tpl))
+        chk("depth_for maps effort to thinking and reach",
+            bb.depth_for("skim") == {"thinking": "brief", "reach": "diff"}
+            and bb.depth_for("low") == {"thinking": "brief", "reach": "callers"}
+            and bb.depth_for("medium") == {"thinking": "standard", "reach": "related"}
+            and bb.depth_for("high") == {"thinking": "deep", "reach": "wide"})
+        chk("parse_target accepts staged and uncommitted",
+            bb.parse_target("staged", ".") == ("staged", None, None, None, None)
+            and bb.parse_target("Uncommitted", ".") == ("uncommitted", None, None, None, None))
+
+        repo = os.path.join(td, "wt-repo")
+        rev_dir = os.path.join(td, "wt-reviews")
+        os.makedirs(repo)
+        git(repo, "init", "-b", "main")
+        git(repo, "config", "user.email", "t@example.com")
+        git(repo, "config", "user.name", "T")
+        write(repo, "app.py", "def f(x):\n    return x\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-m", "init")
+
+        def run_bundle(target, bdir, *extra):
+            return subprocess.run(
+                [sys.executable, "-I", "-B", SCRIPT, target, "--cwd", repo, "--bundle-dir", bdir,
+                 "--reviews-dir", rev_dir, "--persona", tpl, *extra],
+                capture_output=True, text=True)
+
+        # clean tree: no staged changes
+        b0 = os.path.join(td, "b-wt0")
+        p0 = run_bundle("staged", b0, "--effort", "high")
+        chk("staged with nothing staged exits 2 and names the problem",
+            p0.returncode == 2 and "no staged changes" in p0.stderr, (p0.returncode, p0.stderr))
+
+        # staged edit, plus a different unstaged edit on top
+        write(repo, "app.py", "def f(x):\n    return x + 1\n")
+        git(repo, "add", "app.py")
+        write(repo, "app.py", "def f(x):\n    return x + 2\n")
+        b1 = os.path.join(td, "b-wt1")
+        p1 = run_bundle("staged", b1, "--effort", "high", "--non-interactive")
+        s1 = json.loads(p1.stdout) if p1.returncode == 0 else {}
+        diff1 = open(os.path.join(b1, "diff.patch")).read() if p1.returncode == 0 else ""
+        head1 = open(os.path.join(b1, "head", "app.py")).read() if p1.returncode == 0 else ""
+        chk("staged: diff.patch holds the staged edit only, head/ holds the index content",
+            p1.returncode == 0 and "x + 1" in diff1 and "x + 2" not in diff1 and "x + 1" in head1 and "x + 2" not in head1,
+            (p1.returncode, p1.stderr, diff1, head1))
+        chk("staged: target_mode, snapshot, carry off, depth, persona and interactive fields",
+            s1.get("target_mode") == "staged" and s1.get("snapshot") == "index"
+            and (s1.get("carry") or {}).get("enabled") in (False, None)
+            and s1.get("depth") == {"thinking": "deep", "reach": "wide"}
+            and s1.get("persona_source") == "custom" and s1.get("persona_path") == tpl
+            and s1.get("interactive") is False and s1["pr"]["number"] == 0, s1)
+        chk("staged: bundle folder name ends with the mode", b1.endswith("b-wt1") and s1.get("bundle_dir") == b1)
+
+        # staged at skim still gets head/
+        b1s = os.path.join(td, "b-wt1s")
+        p1s = run_bundle("staged", b1s, "--effort", "skim")
+        chk("staged at skim still writes head/ copies and depth is brief/diff",
+            p1s.returncode == 0 and os.path.isfile(os.path.join(b1s, "head", "app.py"))
+            and json.loads(p1s.stdout)["depth"] == {"thinking": "brief", "reach": "diff"}, (p1s.returncode, p1s.stderr))
+
+        # uncommitted: working tree content plus an untracked file
+        write(repo, "new_untracked.py", "x = 1\n")
+        b2 = os.path.join(td, "b-wt2")
+        p2 = run_bundle("uncommitted", b2, "--effort", "high")
+        s2 = json.loads(p2.stdout) if p2.returncode == 0 else {}
+        diff2 = open(os.path.join(b2, "diff.patch")).read() if p2.returncode == 0 else ""
+        head2 = open(os.path.join(b2, "head", "app.py")).read() if p2.returncode == 0 else ""
+        chk("uncommitted: diff and head/ hold the working tree content",
+            p2.returncode == 0 and "x + 2" in diff2 and "x + 2" in head2 and s2.get("snapshot") == "worktree"
+            and s2.get("target_mode") == "uncommitted", (p2.returncode, p2.stderr))
+        chk("uncommitted: coverage limit names the untracked file count",
+            any("untracked files not reviewed: 1" in c for c in (s2.get("coverage_limits") or [])), s2.get("coverage_limits"))
+
+        # carry stays off even when an earlier review exists for owner local
+        write(rev_dir, f"local-wt-repo-0-{git(repo, 'rev-parse', 'HEAD')[:7]}/findings.json",
+              json.dumps({"next_id": {"B": 2}, "last_sha": "a" * 40, "findings": []}))
+        b3 = os.path.join(td, "b-wt3")
+        p3 = run_bundle("uncommitted", b3, "--effort", "high")
+        s3 = json.loads(p3.stdout) if p3.returncode == 0 else {}
+        chk("staged and uncommitted never load carry state",
+            p3.returncode == 0 and not os.path.exists(os.path.join(b3, "previous.json")), (p3.returncode, p3.stderr, s3.get("carry")))
+
+        # default interactive and persona source
+        git(repo, "add", "-A")
+        b4 = os.path.join(td, "b-wt4")
+        p4 = run_bundle("staged", b4)
+        s4 = json.loads(p4.stdout) if p4.returncode == 0 else {}
+        chk("default run is interactive", p4.returncode == 0 and s4.get("interactive") is True, (p4.returncode, p4.stderr))
+
     fails = 0
     for name, ok, detail in checks:
         print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"  <- {detail}"))

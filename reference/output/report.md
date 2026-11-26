@@ -33,7 +33,7 @@ Print this to chat at `level=PR` (default). At `level=CODEBASE`, use the codebas
 **PR claims that the evidence does not support:** <bullets, if any>
 
 ### Must fix (CRITICAL, HIGH)
-**C1 · <title>** — `path:line`
+**C1 · <title>** — `path:line` <add `` `plausible` `` or `` `unverified` `` after the location when the finding is not `verified: confirmed`>
 <comment in STE: problem, evidence, impact, then **Fix:** as commands.>
 <code_example as a ```suggestion block when it is a drop-in replacement, else a normal fenced block.>
 
@@ -58,7 +58,7 @@ Other items that this review did not examine in depth: <medium Pareto cut and OT
 - Earlier finding <id> cleared: <evidence>
 
 ---
-Effort: <high|medium|low|skim> · <medium only: Pareto: <shown> of <total_post> post findings shown ·> Lanes: <lane ✓ | lane NOT ASSESSED (reason) | lane skipped (reason) | lane folded into conventions> · Quality gate: <PASS|CONCERNS|FAIL, with "(partial)" when a lane was folded|n/a> · Findings: <raw> raw → <merged> merged → <evaluated_post> post (<chat_only> chat-only) · Gates removed: <g2> out-of-diff, <g3> downgraded, <g4> low-confidence, <g5> already raised, <g6> linter, <refuted> refuted, <eval> evaluated-out · Persona: <refresh date>, approved | <refresh date>, draft | neutral (none) · Language: ASD-STE100, G8 clean
+Effort: <high|medium|low|skim> · Reach: <wide|related|callers|diff> · <medium only: Pareto: <shown> of <total_post> post findings shown ·> Lanes: <lane ✓ | lane NOT ASSESSED (reason) | lane skipped (reason) | lane folded into conventions> · Quality gate: <PASS|CONCERNS|FAIL, with "(partial)" when a lane was folded|n/a> · Findings: <raw> raw → <merged> merged → <evaluated_post> post (<chat_only> chat-only) · Gates removed: <g2> out-of-diff, <g3> downgraded, <g4> low-confidence, <g5> already raised, <g6> linter, <refuted> refuted, <eval> evaluated-out · Persona: <refresh date>, approved | <refresh date>, draft | neutral (none) · Language: ASD-STE100, G8 clean
 ```
 
 Emoji: 🔴 is used for a blocking verdict and for `Missing` or `Contradicted`, 🟡 for comments and `Partial`, 🟢 for approve and `Met`, and ⚪ for `Not verifiable`.

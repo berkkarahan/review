@@ -16,11 +16,11 @@ A PR is in profile for skim when all of these are true (`build_bundle.py` sets `
 - The diff changes no spec or planned document (`intent.md` §3.3, step 2), and `--spec` is not set (`intent.md` §3.1).
 - `signals.txt` has none of the `auth`, `data`, or `contract` signals.
 
-If one of these is false, the PR is over the skim size. Skim still runs. The lead adds this line to the plan and to the report: `"This PR is over the skim size (<reason>). Run with --effort=low for a deeper review."` An over-size PR never gets an `APPROVE` event.
+If one of these is false, the PR is over the skim size. Skim still runs. The lead adds this line to the plan and to the report: `"This PR is over the skim size (<reason>). Run with --effort=low for a deeper review."` Over size is advice only. It does not change the verdict or the event.
 
 ### Skim context (Phase 0)
 
-- **Persona.** Read only the `voice.*` keys in the `persona.md` frontmatter. Skip the body and the status and age warnings. The footer says `Persona: not applied (skim)`.
+- **Persona.** Read only the `voice.*` keys in the `persona file (`persona_path`) frontmatter. Skip the body and the status and age warnings. The footer says `Persona: not applied (skim)`.
 - **Clone.** Find the target clone with `bundle.md` §1. With a clone, fetch the PR head as in §2 (`git -C <clone> fetch -q origin "refs/pull/<N>/head"` and `git -C <clone> cat-file -e <head_sha>`), and set `<merge_base>` to `git -C <clone> merge-base <baseRefOid> <head_sha>`. With no clone, use the API fallbacks in §2.
 - **PR metadata.**
   ```
@@ -61,26 +61,15 @@ If one of these is false, the PR is over the skim size. Skim still runs. The lea
 
 ### Skim verification and evaluation (Phase 2)
 
-- Save the `skim` agent's JSON result to `<bundle_dir>/raw-lanes.json` and run `python3 <skill_dir>/scripts/merge_findings.py merge <bundle_dir>` (runs Gates G1–G5, drops `MEDIUM`/`LOW` findings including G3-downgraded items, and drops out-of-diff items). Retry `skim` once on `retry_lanes` (G1 failure). After a second failure, print `"Skim failed: <reason>. This review has no verdict."` and stop without computing a verdict or offering to post.
-- Do not add a finding for CI status, and do not report other obvious facts that the author and the reviewer already see (a failed check, a red status, the PR size). CI appears only in the Context line of the chat report, and it still blocks `APPROVE` (§Skim verdict).
-- Verify each CRITICAL and HIGH finding inline, as at `low`: re-read the cited range at `head_sha` and one caller or guard, writing `<bundle_dir>/verifier-results.json` (`"refuted"` if evidence fails, `"unclear"` to downgrade to a question, `"confirmed"` if verified).
+- Save the `skim` agent's JSON result to `<bundle_dir>/raw-lanes.json` and run `python3 <skill_dir>/scripts/merge_findings.py merge <bundle_dir>` (runs Gates G1–G5 and drops out-of-diff items). Retry `skim` once on `retry_lanes` (G1 failure). After a second failure, print `"Skim failed: <reason>. This review has no verdict."` and stop without computing a verdict or offering to post.
+- Do not add a finding for CI status, and do not report other obvious facts that the author and the reviewer already see (a failed check, a red status, the PR size). CI appears only in the Context line of the chat report. It has no effect on the verdict or the event.
+- Verify each CRITICAL and HIGH finding inline, as at `low`: re-read the cited range at `head_sha` and one caller or guard, writing `<bundle_dir>/verifier-results.json` (`"refuted"` if evidence fails, `"unclear"` to downgrade to a question, `"plausible"` if the path exists and nothing refutes it but the trigger depends on input, config or state that the code cannot show, `"confirmed"` if verified). Write a verdict for every CRITICAL and HIGH. A finding with no verdict becomes `verified: unverified`.
 - Apply the Phase 2.2 `evaluation` rubric (`lanes/evaluation.md`) inline to surviving candidates (confirming every surviving item belongs on the PR via `post` | `chat-only` | `drop` while keeping all safety-floor items at `post`) into `<bundle_dir>/eval-results.json`, then run `python3 <skill_dir>/scripts/merge_findings.py finalize <bundle_dir> [--carry] [--still-open <file>] [--cleared <file>]`. If `finalize` exits 1 (`INVALID`), treat it as a skim failure and stop.
 - There is no quality gate, no AC matrix and no Pareto cut.
 
 ### Skim verdict
 
-Compute the verdict and the default event from the verified findings, before any rewrite. `scripts/breaker.py --effort skim` (called by `merge_findings.py finalize`) reproduces this table. Use its output.
-
-| Condition, checked in order | Verdict phrase | Default event |
-|---|---|---|
-| Any verified CRITICAL or HIGH | 🔴 "Not ready to merge" | `voice.hold_event` if any finding is CRITICAL, else `COMMENT` |
-| Any QUESTION | 🟡 "Ready to merge after the comments" | `COMMENT` |
-| Nothing | 🟢 "Ready to merge" | `APPROVE` if the PR is in profile, `!author_is_me` and CI is `passing`, else `COMMENT` |
-
-- If `author_is_me`, use `"Not ready for review"` and `"Ready for review"` as the phrases, and the event is always `COMMENT`.
-- An over-size PR gets `COMMENT` in every row. A PR with CI `pending` or `none` never gets `APPROVE`, because CI is the main evidence for a version upgrade.
-- The reason line of a 🟢 or 🟡 verdict ends with: `"This review examined only CRITICAL and HIGH issues."`
-- An `APPROVE` payload needs the explicit confirmation in `output/posting.md` §Posting step 5, as at every level.
+The verdict, the phrase and the event come from `breaker.py` (called by `merge_findings.py finalize`) and follow `output/verdict.md`, as at every effort level. `skim` has no special table. The PR size, the CI value and `in_profile` do not change the verdict or the event. A posted `APPROVE` needs the explicit confirmation in `output/posting.md` §Posting step 5, as at every level.
 
 ### Skim report
 
@@ -91,7 +80,7 @@ Print this short form instead of `output/report.md` §Report. Write it in STE. O
 
 **Change:** <one STE sentence: what the diff does, for example "This PR changes `foo` from 1.2.3 to 1.2.9 in `package.json`.">
 **Context:** head `<sha7>` · CI <passing | failing: <names> | pending | none> · size <n> changed lines (+ <m> lockfile lines) · PR description <ok|one-line|empty>
-**Gaps:** <list, or "none">. This is a skim review. It did not read specs or tickets. It examined only CRITICAL and HIGH issues.
+**Gaps:** <list, or "none">. This is a skim review. It did not read specs or tickets. Its reach is the diff lines only.
 <if over size> **Warning:** This PR is over the skim size (<reason>). Run with `--effort=low` for a deeper review.
 <include **High risk:** / **Review safety:** / **Earlier declines still present:** when non-empty>
 
@@ -102,7 +91,7 @@ Print this short form instead of `output/report.md` §Report. Write it in STE. O
 1. **Q1** (`path:line`) — <1 concise STE sentence explaining the item>. <Direct question?>   # at most 3
 
 ---
-Effort: skim · Lanes: skim ✓ · Quality gate: n/a · Findings: <raw> raw → <kept> post · Gates removed: <g2> out-of-diff, <g5> already raised, <refuted> refuted, <eval> evaluated-out · Persona: not applied (skim) · Language: ASD-STE100, G8 clean
+Effort: skim · Reach: diff · Lanes: skim ✓ · Quality gate: n/a · Findings: <raw> raw → <kept> post · Gates removed: <g2> out-of-diff, <g5> already raised, <refuted> refuted, <eval> evaluated-out · Persona: not applied (skim) · Language: ASD-STE100, G8 clean
 ```
 
 Phase 3 at skim is the STE rewrite and the self-check only.

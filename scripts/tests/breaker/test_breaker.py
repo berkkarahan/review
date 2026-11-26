@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Table-driven tests for scripts/breaker.py. Run: python3 -I -B test_breaker.py
-Each row is a verdict rule of output/verdict.md §Verdict, effort/low.md §Low verdict phrases or
-§Skim verdict. Input rows that use none of the new optional fields prove that the verdicts
+Each row is a verdict rule of output/verdict.md §Verdict. Effort never changes the verdict,
+the event or the next step, so the same rules are tested at every effort. Input rows that use none of the new optional fields prove that the verdicts
 did not change. Exit code 0 when all pass."""
 import copy
 import hashlib
@@ -71,8 +71,8 @@ for lvl in ("high", "medium"):
     add(f"{lvl}: breaking with migration, only that -> APPROVE WITH COMMENTS", lvl,
         [F("MEDIUM", breaking={"consumers": "c", "migration": "Call the v2 route."})], verdict=AWC)
     add(f"{lvl}: 4 HIGH -> RC", lvl, [F("HIGH") for _ in range(4)], verdict=RC, event="REQUEST_CHANGES")
-    add(f"{lvl}: 3 HIGH -> APPROVE WITH COMMENTS", lvl, [F("HIGH") for _ in range(3)], verdict=AWC, event="COMMENT")
-    add(f"{lvl}: 1 HIGH -> AWC", lvl, [F("HIGH")], verdict=AWC, event="COMMENT")
+    add(f"{lvl}: 3 HIGH -> RC (any open HIGH blocks)", lvl, [F("HIGH") for _ in range(3)], verdict=RC, event="REQUEST_CHANGES")
+    add(f"{lvl}: 1 HIGH -> RC (any open HIGH blocks)", lvl, [F("HIGH")], verdict=RC, event="REQUEST_CHANGES")
     add(f"{lvl}: MEDIUM -> AWC", lvl, [F("MEDIUM")], verdict=AWC, event="COMMENT")
     add(f"{lvl}: QUESTION -> AWC (table row; open point A1)", lvl, [F("QUESTION")], verdict=AWC, event="COMMENT")
     add(f"{lvl}: only LOW -> APPROVE", lvl, [F("LOW")], verdict=AP, event="APPROVE")
@@ -130,51 +130,64 @@ add("band: medium nothing folded -> plain PASS", "medium", [], lanes=L("adherenc
 add("band: NOT ASSESSED with MEDIUM stays APPROVE WITH COMMENTS", "high", [F("MEDIUM")],
     lanes=L("adherence", "code-quality", security="NOT ASSESSED"), verdict=AWC, complete=False)
 
-# Low
-add("low: CRITICAL", "low", [F("CRITICAL")], lanes=L("critical-risk"), verdict=RC, event="COMMENT",
+# Low: same verdict rules as high. Only the band is n/a.
+add("low: CRITICAL", "low", [F("CRITICAL")], lanes=L("critical-risk"), verdict=RC, event="REQUEST_CHANGES",
     phrase="Not ready to merge", emoji="🔴", band="n/a")
 add("low: Missing AC", "low", [F("HIGH", ac_ref="AC1")], [AC("AC1", "Missing")], lanes=L("critical-risk"),
-    verdict=RC, event="COMMENT", phrase="Not ready to merge")
+    verdict=RC, event="REQUEST_CHANGES", phrase="Not ready to merge")
 add("low: Contradicted AC only", "low", [F("MEDIUM", ac_ref="AC2")], [AC("AC2", "Contradicted")], lanes=[],
     verdict=RC, phrase="Not ready to merge")
-add("low: HIGH only", "low", [F("HIGH")], lanes=[], verdict=RC, event="COMMENT",
-    phrase="Fix the HIGH items before merge", emoji="🔴")
-add("low: 4 HIGH is not special", "low", [F("HIGH") for _ in range(4)], lanes=[], phrase="Fix the HIGH items before merge")
-add("low: nothing -> never APPROVE event", "low", [], lanes=[], verdict=AP, event="COMMENT", emoji="🟢",
-    phrase="No CRITICAL or HIGH issues found. This review did not examine MEDIUM or LOW issues.")
-add("low: QUESTION and MEDIUM are not examined", "low", [F("QUESTION"), F("MEDIUM")], lanes=[],
-    verdict=AP, event="COMMENT")
-add("low: breaking is not a separate row", "low", [F("MEDIUM", breaking={"consumers": "c", "migration": ""})],
-    lanes=[], verdict=AP)
+add("low: HIGH only", "low", [F("HIGH")], lanes=[], verdict=RC, event="REQUEST_CHANGES",
+    phrase="Not ready to merge", emoji="🔴")
+add("low: 4 HIGH is not special", "low", [F("HIGH") for _ in range(4)], lanes=[], verdict=RC, phrase="Not ready to merge")
+add("low: nothing -> APPROVE event", "low", [], lanes=[], verdict=AP, event="APPROVE", emoji="🟢",
+    phrase="Ready to merge")
+add("low: QUESTION and MEDIUM -> AWC", "low", [F("QUESTION"), F("MEDIUM")], lanes=[], verdict=AWC, event="COMMENT")
+add("low: breaking with no migration -> RC", "low", [F("MEDIUM", breaking={"consumers": "c", "migration": ""})],
+    lanes=[], verdict=RC)
 add("low: author_is_me", "low", [F("HIGH")], lanes=[], opts={"author_is_me": True}, event="COMMENT",
     phrase="Not ready for review")
 
-# Skim
+# Skim: same verdict rules as high. A skim lane that failed gives no verdict.
 SK = L("skim")
 add("skim: CRITICAL -> RC, hold_event", "skim", [F("CRITICAL")], lanes=SK, verdict=RC, event="REQUEST_CHANGES",
     phrase="Not ready to merge", band="n/a")
 add("skim: CRITICAL, hold COMMENT", "skim", [F("CRITICAL")], lanes=SK, opts={"hold_event": "COMMENT"}, event="COMMENT")
-add("skim: HIGH -> RC, COMMENT", "skim", [F("HIGH")], lanes=SK, verdict=RC, event="COMMENT")
-add("skim: CRITICAL and HIGH -> hold_event", "skim", [F("HIGH"), F("CRITICAL")], lanes=SK, event="REQUEST_CHANGES")
+add("skim: HIGH -> RC, hold_event", "skim", [F("HIGH")], lanes=SK, verdict=RC, event="REQUEST_CHANGES")
 add("skim: QUESTION -> AWC, COMMENT", "skim", [F("QUESTION")], lanes=SK, verdict=AWC, event="COMMENT",
     phrase="Ready to merge after the comments")
-add("skim: nothing, in profile, CI passing -> APPROVE", "skim", [], lanes=SK,
-    opts={"in_profile": True, "ci": "passing"}, verdict=AP, event="APPROVE", phrase="Ready to merge")
-add("skim: nothing, over size -> COMMENT", "skim", [], lanes=SK, opts={"ci": "passing"}, verdict=AP, event="COMMENT")
-add("skim: nothing, CI pending -> COMMENT", "skim", [], lanes=SK, opts={"in_profile": True, "ci": "pending"},
-    event="COMMENT")
-add("skim: nothing, CI none -> COMMENT", "skim", [], lanes=SK, opts={"in_profile": True, "ci": "none"}, event="COMMENT")
-add("skim: nothing, CI failing -> COMMENT", "skim", [], lanes=SK,
-    opts={"in_profile": True, "ci": "failing: build"}, event="COMMENT")
-add("skim: nothing, CI unknown -> COMMENT", "skim", [], lanes=SK, opts={"in_profile": True}, event="COMMENT")
+add("skim: MEDIUM -> AWC (not dropped, not invalid)", "skim", [F("MEDIUM")], lanes=SK, verdict=AWC, event="COMMENT",
+    valid=True)
+add("skim: nothing -> APPROVE", "skim", [], lanes=SK, verdict=AP, event="APPROVE", phrase="Ready to merge")
+add("skim: in_profile and ci have no effect (over size, CI failing)", "skim", [], lanes=SK,
+    opts={"in_profile": False, "ci": "failing: build"}, verdict=AP, event="APPROVE")
+add("skim: in_profile and ci have no effect (in profile, CI passing)", "skim", [], lanes=SK,
+    opts={"in_profile": True, "ci": "passing"}, verdict=AP, event="APPROVE")
 add("skim: author_is_me -> COMMENT, review phrases", "skim", [], lanes=SK,
-    opts={"in_profile": True, "ci": "passing", "author_is_me": True}, event="COMMENT", phrase="Ready for review")
+    opts={"author_is_me": True}, event="COMMENT", phrase="Ready for review")
 add("skim: author_is_me CRITICAL", "skim", [F("CRITICAL")], lanes=SK, opts={"author_is_me": True},
     event="COMMENT", phrase="Not ready for review")
-add("skim: no AC matrix, rows ignored", "skim", [], [AC("AC1", "Missing")], lanes=SK,
-    opts={"in_profile": True, "ci": "passing"}, verdict=AP, unsatisfied=0)
-add("skim: MEDIUM must be dropped -> invalid", "skim", [F("MEDIUM")], lanes=SK, valid=False)
+add("skim: no AC matrix, rows ignored", "skim", [], [AC("AC1", "Missing")], lanes=SK, verdict=AP, unsatisfied=0)
 add("skim: lane failed -> no verdict, invalid", "skim", [], lanes=L(skim="NOT ASSESSED"), valid=False)
+
+# next_step
+add("next_step: RC -> fix", "high", [F("HIGH")], next_step="fix")
+add("next_step: AWC -> document", "high", [F("MEDIUM")], next_step="document")
+add("next_step: APPROVE -> done", "high", [], next_step="done")
+add("next_step: NOT ASSESSED with nothing open -> rerun", "high", [],
+    lanes=L("adherence", "code-quality", conventions="NOT ASSESSED"), next_step="rerun", complete=False)
+add("next_step: RC wins over incomplete", "high", [F("CRITICAL")],
+    lanes=L("adherence", "code-quality", conventions="NOT ASSESSED"), next_step="fix")
+add("next_step: declined blocking -> document", "high", [F("HIGH", status="declined", reason="r")], next_step="document")
+
+# plausible and unverified CRITICAL/HIGH count like confirmed ones, at every effort
+for _eff, _lanes in (("high", None), ("medium", None), ("low", []), ("skim", SK)):
+    add(f"{_eff}: unverified HIGH is valid and blocks", _eff, [F("HIGH", verified="unverified")], lanes=_lanes,
+        valid=True, verdict=RC, next_step="fix")
+    add(f"{_eff}: plausible HIGH is valid and blocks", _eff, [F("HIGH", verified="plausible")], lanes=_lanes,
+        valid=True, verdict=RC)
+    add(f"{_eff}: unverified CRITICAL blocks", _eff, [F("CRITICAL", verified="unverified")], lanes=_lanes,
+        valid=True, verdict=RC)
 
 # Additive rules (new optional fields only)
 add("new: no status counts as todo, no origin as new", "high", [F("HIGH")], open={"high": 1}, declined_blocking=0)
@@ -192,7 +205,7 @@ add("new: declined existing HIGH is not blocking", "high",
 add("new: declined plus open CRITICAL stays RC", "high",
     [F("HIGH", status="declined", reason="r"), F("CRITICAL")], verdict=RC)
 add("new: skim declined blocks APPROVE", "skim", [F("HIGH", status="declined", reason="r")], lanes=SK,
-    opts={"in_profile": True, "ci": "passing"}, verdict=AWC, event="COMMENT")
+    verdict=AWC, event="COMMENT")
 add("new: low declined blocks APPROVE", "low", [F("HIGH", status="declined", reason="r")], lanes=[],
     verdict=AWC, event="COMMENT")
 
@@ -205,7 +218,7 @@ add("invalid: HIGH with no trigger", "high", [F("HIGH", trigger="")], valid=Fals
 add("invalid: HIGH with n/a trigger", "high", [F("HIGH", trigger="n/a")], valid=False)
 add("valid: conventions HIGH with n/a (convention)", "high", [F("HIGH", lane="conventions", trigger="n/a (convention)")],
     valid=True)
-add("invalid: unverified HIGH not downgraded", "high", [F("HIGH", verified="unverified")], valid=False)
+add("valid: unverified HIGH is kept at its level", "high", [F("HIGH", verified="unverified")], valid=True)
 add("invalid: bad severity", "high", [F("BLOCKER")], valid=False)
 add("invalid: bad status", "high", [F("LOW", status="open")], valid=False)
 add("invalid: bad origin", "high", [F("LOW", origin="old")], valid=False)
@@ -277,6 +290,22 @@ def pre_prev_cases():
     pre_unv = [F("HIGH", id="x", title="Not confirmed", verified="unverified")]
     o = breaker.compute({"findings": [], "lanes": base_lanes}, {}, pre=pre_unv)
     chk("floor: unverified pre finding is not on the floor", o["valid"], str(o["invalid"]))
+
+    # effort never changes verdict, event or next_step
+    inv_sets = {
+        "HIGH": [F("HIGH")], "MEDIUM": [F("MEDIUM")], "QUESTION": [F("QUESTION")], "none": [],
+        "CRITICAL": [F("CRITICAL")], "unverified HIGH": [F("HIGH", verified="unverified")],
+    }
+    for label, fs in inv_sets.items():
+        for lvl in ("PR", "CODEBASE"):
+            seen = {}
+            for eff in ("high", "medium", "low", "skim"):
+                if lvl == "CODEBASE" and eff == "skim":
+                    continue
+                lanes = {"high": base_lanes, "medium": base_lanes, "low": [], "skim": L("skim")}[eff]
+                oo = breaker.compute({"findings": copy.deepcopy(fs), "lanes": lanes}, {"effort": eff, "level": lvl})
+                seen[eff] = (oo["valid"], oo["verdict"], oo["event"], oo["next_step"], oo["phrase"])
+            chk(f"effort invariance: {label} at level {lvl}", len(set(seen.values())) == 1, str(seen))
     o = breaker.compute({"findings": [F("HIGH", id="H1", title="Other", location="zz.py:1",
                                          introduced_by_pr="pre-existing")], "lanes": base_lanes}, {},
                         pre=[F("HIGH", id="q", title="Other", location="zz.py:1")])

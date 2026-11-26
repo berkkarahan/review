@@ -59,7 +59,6 @@ STE does not apply to lane prompts, verifier prompts, `intent.md` or other inter
 |---|---|
 | Verdict REQUEST CHANGES / APPROVE WITH COMMENTS / APPROVE | "Not ready to merge" / "Ready to merge after the comments" / "Ready to merge" |
 | Verdict when `author_is_me` | "Not ready for review" / "Ready for review" |
-| Verdict at `effort=low` (other HIGH / none) | "Fix the HIGH items before merge" / "No CRITICAL or HIGH issues found. This review did not examine MEDIUM or LOW issues." |
 | Verdict at `level=CODEBASE` (`NEEDS ACTION` / `IMPROVEMENTS RECOMMENDED` / `HEALTHY`) | "Codebase needs urgent fixes" / "Codebase needs targeted improvements" / "Codebase is in good shape" |
 | Adherence section (`PR` / `CODEBASE`) | "Adherence" / "Spec and documentation drift" |
 | CRITICAL and HIGH section | "Must fix (CRITICAL, HIGH)" |
