@@ -57,8 +57,8 @@ STE does not apply to lane prompts, verifier prompts, `intent.md` or other inter
 
 | Use | STE text |
 |---|---|
-| Verdict REQUEST CHANGES / APPROVE WITH COMMENTS / APPROVE | "Not ready to merge" / "Ready to merge after the comments" / "Ready to merge" |
-| Verdict when `author_is_me` | "Not ready for review" / "Ready for review" |
+| Verdict `REQUEST_CHANGES` / `COMMENT` / `APPROVE` | "Not ready to merge" / "Comments for the author" / "Ready to merge" |
+| Verdict when `author_is_me` (`REQUEST_CHANGES` / `COMMENT` / `APPROVE`) | "Not ready for review" / "Comments for self-review" / "Ready for review" |
 | Verdict at `level=CODEBASE` (`NEEDS ACTION` / `IMPROVEMENTS RECOMMENDED` / `HEALTHY`) | "Codebase needs urgent fixes" / "Codebase needs targeted improvements" / "Codebase is in good shape" |
 | Adherence section (`PR` / `CODEBASE`) | "Adherence" / "Spec and documentation drift" |
 | CRITICAL and HIGH section | "Must fix (CRITICAL, HIGH)" |

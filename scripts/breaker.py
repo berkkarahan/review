@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Deterministic breaker: open counts, completeness, quality-gate band, verdict and event.
+"""Deterministic breaker: validation, open counts, safety floor, completeness, quality-gate band, and verdict validation.
 
 Usage:
   breaker.py <findings.json> [--pre <pre.json>] [--previous <previous.json>]
              [--level PR|CODEBASE] [--effort high|medium|low|skim]
              [--hold-event REQUEST_CHANGES|COMMENT] [--author-is-me]
              [--in-profile] [--ci <value>]
+             [--verdict APPROVE|COMMENT|REQUEST_CHANGES] [--verdict-reason <text>]
+             [--verdict-override-reason <text>] [--verdict-file <verdict-decision.json>]
+             [--require-verdict]
 
 Input (<findings.json>): a JSON object, or a bare JSON array of findings:
   {"findings": [Finding...],          merged and verified set (SKILL.md Phase 2.2)
    "ac_matrix": [ACRow...],           statuses after verification
    "lanes": [{"lane", "status"?, "reason"?, "high_risk"?, "cleared"?}...],
    "folded": ["security", ...],       medium/high: folded lanes
+   "decision": {"verdict", "reason", "override_reason"?},  optional PR post-review verdict decision
    "level", "effort", "hold_event", "author_is_me", "in_profile", "ci"  optional; CLI flags override}
 A lane status is returned (default), abstained, or NOT ASSESSED (alias: failed).
 An abstained lane counts as returned.
@@ -22,41 +26,45 @@ no status counts as todo, and one with no origin counts as new.
 
 Output: JSON on stdout:
   {"valid", "level", "effort", "open", "unsatisfied", "declined_blocking", "complete",
-   "band", "verdict", "emoji", "phrase", "event", "next_step", "reasons", "notes", "invalid"}
+   "band", "blocking_signals", "verdict", "verdict_pending", "verdict_reason",
+   "verdict_override_reason", "verdict_overrode_blocking", "emoji", "phrase", "event",
+   "next_step", "reasons", "notes", "invalid"}
 Exit code: 0 when valid. 1 when invalid, with one "INVALID: ..." line on stderr for
 each problem. 2 for a usage error. The script never writes a file and never changes
-the findings. The verdict and the event come from this script only. Do not recompute them.
-Stdlib only.
+the findings. Stdlib only.
 
-Verdict rules (the code below is the authority). Effort never changes the verdict, the event
-or the next step. Effort sets only how deep the review looked (reference/effort/levels.md).
-  Checked in order, at every effort:
-    any open CRITICAL, any Missing/Contradicted AC, any breaking change with no
-    migration, or any open HIGH         -> REQUEST CHANGES
-    any MEDIUM or QUESTION              -> APPROVE WITH COMMENTS
-    only LOW, or nothing                -> APPROVE
-  A CRITICAL or HIGH that is plausible or unverified counts the same as a confirmed one.
-  Event at level=PR: REQUEST CHANGES -> voice.hold_event (default REQUEST_CHANGES),
-    APPROVE WITH COMMENTS -> COMMENT, APPROVE -> APPROVE. author_is_me makes it COMMENT.
+Verdict rules (output/verdict.md). Effort never restricts the verdict, the event, or the next step.
+Effort sets only how deep the review looked (reference/effort/levels.md).
+  PR (level=PR):
+    breaker.py does NOT mechanically compute a verdict from finding counts. Instead, after
+    Phase 2.3 finalize validates findings, safety floor, carry continuity, counts, quality-gate
+    band, and blocking_signals, Phase 2.4 records a holistic post-review decision:
+      verdict: APPROVE | COMMENT | REQUEST_CHANGES (regardless of inline comments)
+      reason: non-empty STE sentence explaining the decision
+      override_reason: required when verdict == APPROVE while blocking_signals is non-empty
+                       (Soft Guardrail: open CRITICAL/HIGH, Missing/Contradicted AC,
+                       unmigrated breaking change, declined_blocking, or NOT ASSESSED lane)
+    Without a decision, level=PR returns verdict=null, event=null, next_step=null,
+    verdict_pending=true (and valid=false only when --require-verdict is passed).
+    Event at level=PR: author_is_me forces COMMENT (GitHub API rule). Otherwise
+    REQUEST_CHANGES -> voice.hold_event (default REQUEST_CHANGES), COMMENT -> COMMENT,
+    APPROVE -> APPROVE. Users may still switch events at posting time (output/posting.md).
+    next_step at level=PR:
+      fix       REQUEST_CHANGES
+      done      APPROVE
+      rerun     COMMENT with a NOT ASSESSED lane
+      document  COMMENT when complete
+      null      verdict pending or input invalid
   --in-profile and --ci are accepted for compatibility. They have no effect on the verdict or event.
   skim (PR only; rejected at CODEBASE): a NOT ASSESSED skim lane sets valid=False (no verdict).
-  Every level: a NOT ASSESSED lane caps APPROVE at APPROVE WITH COMMENTS (the reason
-    names the lane). A new CRITICAL or HIGH with status declined (or a standing confirmed
-    repeat decline) counts in declined_blocking and blocks APPROVE.
-  CODEBASE (level=CODEBASE): maps REQUEST CHANGES -> NEEDS ACTION, APPROVE WITH COMMENTS ->
-    IMPROVEMENTS RECOMMENDED, APPROVE -> HEALTHY; counts pre-existing findings; event is
-    always NONE (even when author_is_me is true).
-  next_step (from the PR-level verdict, before the CODEBASE mapping):
-    fix       REQUEST CHANGES: open blocking items remain.
-    rerun     a lane is NOT ASSESSED. Run the review again.
-    document  APPROVE WITH COMMENTS: only non-blocking or declined items remain. Fix them or
-              record a decline reason (carry_findings.py mark), then stop.
-    done      nothing is left to do.
-    null      the input is invalid.
-  Quality gate (informational, never changes the verdict; high and medium): band code-quality, performance and security (via lane or
-    sources); CRITICAL or HIGH -> FAIL, MEDIUM -> CONCERNS, LOW or none -> PASS; the worst
-    band wins. A NOT ASSESSED lane sets complete false and caps the band at CONCERNS. Medium
-    adds "(partial)" when a lane was folded. Low and skim: band n/a.
+  CODEBASE (level=CODEBASE): computes deterministic codebase health verdicts (NEEDS ACTION,
+    IMPROVEMENTS RECOMMENDED, HEALTHY), counts pre-existing findings, and always sets event to NONE.
+    next_step: fix (NEEDS ACTION), rerun (NOT ASSESSED lane), document (IMPROVEMENTS RECOMMENDED),
+    done (HEALTHY), null (invalid).
+  Quality gate (informational, never changes the verdict; high and medium): band code-quality,
+    performance and security (via lane or sources); CRITICAL or HIGH -> FAIL, MEDIUM -> CONCERNS,
+    LOW or none -> PASS; the worst band wins. A NOT ASSESSED lane sets complete false and caps
+    the band at CONCERNS. Medium adds "(partial)" when a lane was folded. Low and skim: band n/a.
 """
 import argparse
 import json
@@ -65,6 +73,7 @@ import sys
 
 LEVELS = ("high", "medium", "low", "skim")
 REVIEW_LEVELS = ("PR", "CODEBASE")
+PR_VERDICTS = ("APPROVE", "COMMENT", "REQUEST_CHANGES")
 SEVS = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "QUESTION")
 RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "QUESTION": 0}
 AC_STATUS = {"Met", "Partial", "Missing", "Contradicted", "Not verifiable"}
@@ -82,7 +91,7 @@ FLOOR_KEYWORDS = (
     "corrupt", "injection", "auth", "secret", "secrets", "credential",
 )
 
-# Set False so any open QUESTION yields APPROVE WITH COMMENTS (matches verdict.md & skim table).
+# Used at level=CODEBASE: any open QUESTION yields IMPROVEMENTS RECOMMENDED rather than HEALTHY.
 QUESTION_ONLY_APPROVES = False
 
 LOC_SITE_RX = re.compile(r"^(?P<p>[^\n:]+):(?P<a>\d+)(?:-(?P<b>\d+))?$")
@@ -92,13 +101,13 @@ NO_MIGRATION = re.compile(
     re.I)
 
 PHRASE = {
-    "REQUEST CHANGES": ("🔴", "Not ready to merge", "Not ready for review"),
-    "APPROVE WITH COMMENTS": ("🟡", "Ready to merge after the comments", "Ready for review"),
+    "REQUEST_CHANGES": ("🔴", "Not ready to merge", "Not ready for review"),
+    "COMMENT": ("🟡", "Comments for the author", "Comments for self-review"),
     "APPROVE": ("🟢", "Ready to merge", "Ready for review"),
 }
 CODEBASE_VERDICT_MAP = {
-    "REQUEST CHANGES": "NEEDS ACTION",
-    "APPROVE WITH COMMENTS": "IMPROVEMENTS RECOMMENDED",
+    "REQUEST_CHANGES": "NEEDS ACTION",
+    "COMMENT": "IMPROVEMENTS RECOMMENDED",
     "APPROVE": "HEALTHY",
 }
 CODEBASE_PHRASE = {
@@ -426,7 +435,7 @@ def _parse_bool_opt(opt_val, data_val, name, invalid):
     return False
 
 
-def compute(data, opts, pre=None, previous=None):
+def compute(data, opts, pre=None, previous=None, decision=None):
     invalid, notes, reasons = [], [], []
     if isinstance(data, list):
         data = {"findings": data}
@@ -516,11 +525,30 @@ def compute(data, opts, pre=None, previous=None):
 
     states = [lane_state(ln) for ln in lanes if isinstance(ln, dict)]
     complete = "NOT ASSESSED" not in states
+    failed_lanes = sorted(
+        str(ln.get("lane", "?")) for ln in lanes
+        if isinstance(ln, dict) and lane_state(ln) == "NOT ASSESSED"
+    )
     if effort == "skim" and any(isinstance(ln, dict) and ln.get("lane") == "skim"
                                 and lane_state(ln) == "NOT ASSESSED" for ln in lanes):
         invalid.append("skim lane failed; this review has no verdict")
 
-    # Team-gate band (SKILL.md Phase 2.4).
+    # Deterministic blocking/caution signals (informational; Soft Guardrail trigger at level=PR).
+    blocking_signals = []
+    if n["CRITICAL"]:
+        blocking_signals.append(f"open CRITICAL ({n['CRITICAL']})")
+    if unsat:
+        blocking_signals.append(f"Missing or Contradicted AC ({unsat})")
+    if nomig:
+        blocking_signals.append("breaking change with no migration")
+    if n["HIGH"]:
+        blocking_signals.append(f"open HIGH ({n['HIGH']})")
+    if declined:
+        blocking_signals.append(f"declined_blocking ({len(declined)})")
+    if not complete:
+        blocking_signals.append("incomplete: NOT ASSESSED lane(s) " + ", ".join(failed_lanes))
+
+    # Team-gate band (SKILL.md Phase 2.3).
     band = "n/a"
     if effort in ("high", "medium"):
         names = {ln.get("lane") for ln in lanes if isinstance(ln, dict) and isinstance(ln.get("lane"), str)}
@@ -537,55 +565,140 @@ def compute(data, opts, pre=None, previous=None):
             if effort == "medium" and folded:
                 band += " (partial)"
 
-    # Verdict (output/verdict.md). One table at every effort: effort never changes it.
-    if n["CRITICAL"]:
-        verdict, why = "REQUEST CHANGES", "open CRITICAL"
-    elif unsat:
-        verdict, why = "REQUEST CHANGES", "Missing or Contradicted AC"
-    elif nomig:
-        verdict, why = "REQUEST CHANGES", "breaking change with no migration"
-    elif n["HIGH"]:
-        verdict, why = "REQUEST CHANGES", "open HIGH"
-    elif n["MEDIUM"] or (n["QUESTION"] and not QUESTION_ONLY_APPROVES):
-        verdict, why = "APPROVE WITH COMMENTS", "MEDIUM or QUESTION"
-    else:
-        verdict, why = "APPROVE", "only LOW, or nothing"
-    reasons.append(why)
-    if verdict == "APPROVE" and declined:
-        verdict = "APPROVE WITH COMMENTS"
-        reasons.append("declined_blocking: a declined new CRITICAL or HIGH blocks APPROVE")
-    if not complete and verdict == "APPROVE":
-        # An incomplete review cannot approve. The event follows the verdict below.
-        verdict = "APPROVE WITH COMMENTS"
-        failed = sorted(str(ln.get("lane", "?")) for ln in lanes
-                        if isinstance(ln, dict) and lane_state(ln) == "NOT ASSESSED")
-        reasons.append("incomplete: NOT ASSESSED lane(s) " + ", ".join(failed) + " block APPROVE")
-
-    if verdict == "REQUEST CHANGES":
-        next_step = "fix"
-    elif not complete:
-        next_step = "rerun"
-    elif verdict == "APPROVE WITH COMMENTS":
-        next_step = "document"
-    else:
-        next_step = "done"
+    verdict = None
+    verdict_pending = False
+    verdict_reason = None
+    verdict_override_reason = None
+    verdict_overrode_blocking = False
+    emoji = None
+    phrase = None
+    event = None
+    next_step = None
 
     if level == "CODEBASE":
-        verdict = CODEBASE_VERDICT_MAP[verdict]
+        # CODEBASE health state remains deterministic (NEEDS ACTION / IMPROVEMENTS RECOMMENDED / HEALTHY).
+        if n["CRITICAL"]:
+            cb_key, why = "REQUEST_CHANGES", "open CRITICAL"
+        elif unsat:
+            cb_key, why = "REQUEST_CHANGES", "Missing or Contradicted AC"
+        elif nomig:
+            cb_key, why = "REQUEST_CHANGES", "breaking change with no migration"
+        elif n["HIGH"]:
+            cb_key, why = "REQUEST_CHANGES", "open HIGH"
+        elif n["MEDIUM"] or (n["QUESTION"] and not QUESTION_ONLY_APPROVES):
+            cb_key, why = "COMMENT", "MEDIUM or QUESTION"
+        else:
+            cb_key, why = "APPROVE", "only LOW, or nothing"
+        reasons.append(why)
+        if cb_key == "APPROVE" and declined:
+            cb_key = "COMMENT"
+            reasons.append("declined_blocking: a declined new CRITICAL or HIGH blocks HEALTHY")
+        if not complete and cb_key == "APPROVE":
+            cb_key = "COMMENT"
+            reasons.append("incomplete: NOT ASSESSED lane(s) " + ", ".join(failed_lanes) + " block HEALTHY")
+
+        verdict = CODEBASE_VERDICT_MAP[cb_key]
         emoji, phrase = CODEBASE_PHRASE[verdict]
         event = "NONE"
-    else:
-        emoji, phrase, me_phrase = PHRASE[verdict]
-        if me:
-            phrase = me_phrase
-        if me:
-            event = "COMMENT"
-        elif verdict == "REQUEST CHANGES":
-            event = hold
-        elif verdict == "APPROVE WITH COMMENTS":
-            event = "COMMENT"
+        if invalid:
+            next_step = None
+        elif cb_key == "REQUEST_CHANGES":
+            next_step = "fix"
+        elif not complete:
+            next_step = "rerun"
+        elif cb_key == "COMMENT":
+            next_step = "document"
         else:
-            event = "APPROVE"
+            next_step = "done"
+    else:
+        # level=PR: verdict comes from the post-review decision (Phase 2.4), never mechanically from finding counts.
+        cli_has_dec = any(opts.get(k) is not None for k in ("verdict", "verdict_reason", "verdict_override_reason"))
+        embedded_dec = data.get("decision")
+        has_decision = (decision is not None) or (embedded_dec is not None) or cli_has_dec
+
+        if not has_decision:
+            verdict_pending = True
+            if opts.get("require_verdict"):
+                invalid.append("PR verdict decision is missing")
+        else:
+            dec_obj = {}
+            if embedded_dec is not None:
+                if isinstance(embedded_dec, dict):
+                    dec_obj.update(embedded_dec)
+                else:
+                    invalid.append("decision must be a JSON object")
+            if decision is not None:
+                if isinstance(decision, dict):
+                    dec_obj.update(decision)
+                else:
+                    invalid.append("verdict file must be a JSON object")
+            if opts.get("verdict") is not None:
+                dec_obj["verdict"] = opts["verdict"]
+            if opts.get("verdict_reason") is not None:
+                dec_obj["reason"] = opts["verdict_reason"]
+            if opts.get("verdict_override_reason") is not None:
+                dec_obj["override_reason"] = opts["verdict_override_reason"]
+
+            raw_v = dec_obj.get("verdict")
+            if not isinstance(raw_v, str) or raw_v.strip().upper() not in PR_VERDICTS:
+                invalid.append(f"verdict must be one of {', '.join(PR_VERDICTS)}")
+            else:
+                verdict = raw_v.strip().upper()
+
+            raw_r = dec_obj.get("reason")
+            if not is_str_present(raw_r):
+                invalid.append("verdict decision needs a non-empty reason")
+            else:
+                verdict_reason = raw_r.strip()
+                reasons.append(verdict_reason)
+
+            raw_or = dec_obj.get("override_reason")
+            if raw_or is not None and not isinstance(raw_or, str):
+                invalid.append("verdict override_reason must be a string")
+            elif isinstance(raw_or, str) and raw_or.strip():
+                verdict_override_reason = raw_or.strip()
+
+            # Soft Guardrail: APPROVE while active blocking signals exist requires explicit override_reason.
+            if verdict == "APPROVE" and blocking_signals:
+                if not verdict_override_reason:
+                    invalid.append(
+                        f"APPROVE overrides active blocking signals ({', '.join(blocking_signals)}) "
+                        "and requires a non-empty override_reason"
+                    )
+                else:
+                    verdict_overrode_blocking = True
+                    reasons.append(f"override: {verdict_override_reason}")
+                    notes.append(
+                        f"APPROVE overrides blocking signals ({', '.join(blocking_signals)}): "
+                        f"{verdict_override_reason}"
+                    )
+            elif verdict_override_reason:
+                reasons.append(f"override: {verdict_override_reason}")
+
+            if verdict is not None:
+                emoji, phrase, me_phrase = PHRASE[verdict]
+                if me:
+                    phrase = me_phrase
+                    event = "COMMENT"
+                    if verdict != "COMMENT":
+                        notes.append("author_is_me forces GitHub event to COMMENT")
+                elif verdict == "REQUEST_CHANGES":
+                    event = hold
+                    if hold != "REQUEST_CHANGES":
+                        notes.append(f"hold_event sets GitHub event to {hold}")
+                else:
+                    event = verdict
+
+                if invalid:
+                    next_step = None
+                elif verdict == "REQUEST_CHANGES":
+                    next_step = "fix"
+                elif verdict == "APPROVE":
+                    next_step = "done"
+                elif not complete:
+                    next_step = "rerun"
+                else:
+                    next_step = "document"
 
     return {
         "valid": not invalid,
@@ -596,7 +709,12 @@ def compute(data, opts, pre=None, previous=None):
         "declined_blocking": len(declined),
         "complete": complete,
         "band": band,
+        "blocking_signals": blocking_signals,
         "verdict": verdict,
+        "verdict_pending": verdict_pending,
+        "verdict_reason": verdict_reason,
+        "verdict_override_reason": verdict_override_reason,
+        "verdict_overrode_blocking": verdict_overrode_blocking,
         "emoji": emoji,
         "phrase": phrase,
         "event": event,
@@ -631,17 +749,25 @@ def main(argv=None):
     ap.add_argument("--author-is-me", dest="author_is_me", action="store_true")
     ap.add_argument("--in-profile", dest="in_profile", action="store_true")
     ap.add_argument("--ci")
+    ap.add_argument("--verdict", type=str.upper, choices=PR_VERDICTS)
+    ap.add_argument("--verdict-reason", dest="verdict_reason")
+    ap.add_argument("--verdict-override-reason", dest="verdict_override_reason")
+    ap.add_argument("--verdict-file", dest="verdict_file")
+    ap.add_argument("--require-verdict", dest="require_verdict", action="store_true")
     args = ap.parse_args(argv)
 
     bad = []
     data = load(args.findings, "findings", bad)
     pre = load(args.pre, "pre file", bad) if args.pre else None
     prev = load(args.previous, "previous file", bad) if args.previous else None
+    dec = load(args.verdict_file, "verdict file", bad) if args.verdict_file else None
     if bad or data is None:
         out = {"valid": False, "open": None, "unsatisfied": None, "complete": None, "band": None,
-               "verdict": None, "event": None, "next_step": None, "invalid": bad}
+               "blocking_signals": [], "verdict": None, "verdict_pending": False, "verdict_reason": None,
+               "verdict_override_reason": None, "verdict_overrode_blocking": False,
+               "event": None, "next_step": None, "invalid": bad}
     else:
-        out = compute(data, vars(args), pre, prev)
+        out = compute(data, vars(args), pre, prev, decision=dec)
     json.dump(out, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")
     for line in out.get("invalid") or []:

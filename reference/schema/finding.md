@@ -23,12 +23,12 @@ Finding {
   ac_ref?: string         // AC3 / B2 / T1 / P1, or a spec item id, that this finding relates to
   breaking?: { consumers: string, migration: string }  // external contract change
   sources: string[]       // e.g. ["security", "code-quality"] — filled by merge_findings.py
-  verified?: confirmed | plausible | refuted | unverified   // filled by Phase 2.2 / finalize. confirmed = traced and true. plausible = not refuted, depends on input, config or state the code cannot show. refuted = false (removed). unverified = nobody checked it (or the verifier said unclear). Only confirmed has the safety floor. A plausible or unverified CRITICAL/HIGH still counts for the verdict
+  verified?: confirmed | plausible | refuted | unverified   // filled by Phase 2.2 / finalize. confirmed = traced and true. plausible = not refuted, depends on input, config or state the code cannot show. refuted = false (removed). unverified = nobody checked it (or the verifier said unclear). Only confirmed has the safety floor. A plausible or unverified CRITICAL/HIGH still counts in open / blocking_signals
   in_diff?: bool          // filled by merge_findings.py (Phase 2.1, G2): true for non-intent code locations (and false for open.json re-raises outside a delta diff)
   dedupe_key?: string     // optional or filled during merge: "<category>:<symbol or file>"
 
   // Evaluation fields (Phase 2.2, Gate G10). All are optional.
-  eval_disposition?: post | chat-only | drop  // filled by evaluation lane; only "post" reaches PR comments and breaker verdict
+  eval_disposition?: post | chat-only | drop  // filled by evaluation lane; only "post" reaches PR comments and breaker open counts / blocking_signals
   eval_reason?: string                        // one-sentence evaluation rationale
   eval_downgraded?: bool                      // true when evaluation lowered an inflated non-floor severity
 

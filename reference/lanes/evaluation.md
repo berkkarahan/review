@@ -1,6 +1,6 @@
 # Evaluation lane (Phase 2.2 Wave / Gate G10)
 
-Specialist Phase 1 lanes are candidate generators and are never taken for granted. Not every technically valid finding or checklist hit belongs on the PR. Gate G10 evaluates candidate findings before Carry (`G9`), Breaker (`breaker.py`), and Persona Pass so only high-signal, strictly scoped items reach the report and verdict.
+Specialist Phase 1 lanes are candidate generators and are never taken for granted. Not every technically valid finding or checklist hit belongs on the PR. Gate G10 evaluates candidate findings before Carry (`G9`), Breaker validation (`breaker.py`), the Phase 2.4 verdict decision, and Persona Pass so only high-signal, strictly scoped items reach the report and `open` / `blocking_signals` counts.
 
 ## Overlapped Parallel Execution (Phase 2.2 Wave)
 
@@ -22,8 +22,8 @@ Evaluate every candidate finding against `<bundle_dir>/diff.patch` + `<bundle_di
    - Drop checklist pedantry, speculative "what-if" scenarios with no plausible path, style opinions unsupported by repo conventions or `persona.md`, idiomatic codebase/framework patterns, micro-optimizations on cold paths, and duplicate angles on a defect already covered by a stronger finding.
    - Drop claims that repeat or contradict trade-offs explicitly stated as intentional in `intent.md` or the PR description unless they violate a safety/security/contract boundary.
 3. **Channel Routing (`disposition`).**
-   - `post`: Actionable, high-signal, strictly scoped defect or blocking question that must affect the verdict and go into the report/PR review.
-   - `chat-only`: Useful informational observation or minor note for the human reviewer in chat (`MEDIUM`/`LOW`/`QUESTION` only) that should **not** be posted to the PR and should **not** count toward the verdict.
+   - `post`: Actionable, high-signal, strictly scoped defect or question that belongs in the report, `open` counts, and PR comments.
+   - `chat-only`: Useful informational observation or minor note for the human reviewer in chat (`MEDIUM`/`LOW`/`QUESTION` only) that should **not** be posted as a PR comment and should **not** count in `open` / `blocking_signals`.
    - `drop`: Low-signal, speculative, unverified, or out-of-scope non-blocking candidate discarded completely before Carry, Breaker, and Report.
 4. **Severity Calibration (`adjusted_severity`).**
    - When a lane inflated a non-floor finding's severity (for example, marking a localized maintainability preference `HIGH` or a tiny nit `MEDIUM`), set `adjusted_severity` to `MEDIUM`, `LOW`, or `QUESTION` (`eval_downgraded: true`) and state why in `eval_reason`.

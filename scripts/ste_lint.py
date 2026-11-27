@@ -83,7 +83,7 @@ V_API_RX = re.compile(
 )
 META_LINE_RX = re.compile(
     r"^\s*(?:>\s*)*\*\*(?:Top items|Counts|Context|Gaps|Scope|Change|Warning|High risk|"
-    r"Review safety|Earlier declines still present|Earlier findings[^*]*|"
+    r"Override note|Review safety|Earlier declines still present|Earlier findings[^*]*|"
     r"Out of scope or not expected|PR claims[^*]*):\*\*"
 )
 MIDDLE_DOT_META_RX = re.compile(

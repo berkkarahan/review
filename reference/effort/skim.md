@@ -67,16 +67,17 @@ If one of these is false, the PR is over the skim size. Skim still runs. The lea
 - Apply the Phase 2.2 `evaluation` rubric (`lanes/evaluation.md`) inline to surviving candidates (confirming every surviving item belongs on the PR via `post` | `chat-only` | `drop` while keeping all safety-floor items at `post`) into `<bundle_dir>/eval-results.json`, then run `python3 <skill_dir>/scripts/merge_findings.py finalize <bundle_dir> [--carry] [--still-open <file>] [--cleared <file>]`. If `finalize` exits 1 (`INVALID`), treat it as a skim failure and stop.
 - There is no quality gate, no AC matrix and no Pareto cut.
 
-### Skim verdict
+### Skim verdict (Phase 2.4)
 
-The verdict, the phrase and the event come from `breaker.py` (called by `merge_findings.py finalize`) and follow `output/verdict.md`, as at every effort level. `skim` has no special table. The PR size, the CI value and `in_profile` do not change the verdict or the event. A posted `APPROVE` needs the explicit confirmation in `output/posting.md` §Posting step 5, as at every level.
+Decide the final verdict (`APPROVE` | `COMMENT` | `REQUEST_CHANGES`) holistically after `finalize` regardless of inline comments, and record/validate it with `python3 <skill_dir>/scripts/merge_findings.py verdict <bundle_dir> --verdict <...> --reason "<STE sentence>" [--override-reason "<STE sentence>"]` (`output/verdict.md`), as at every effort level. `skim` has no special table and no special event restrictions. A `NOT ASSESSED` skim lane still fails with no verdict. Posting needs the explicit confirmation in `output/posting.md` §Posting step 5, as at every level.
 
 ### Skim report
 
 Print this short form instead of `output/report.md` §Report. Write it in STE. Omit the "Must fix" and "Questions" sections if they are empty.
 ```markdown
 ## <🔴|🟡|🟢> <verdict phrase> — <owner>/<repo>#<N> · <PR title>
-<one-sentence reason>
+<verdict_reason (one concise STE sentence)>
+<when verdict_overrode_blocking is true:> **Override note:** <verdict_override_reason>.
 
 **Change:** <one STE sentence: what the diff does, for example "This PR changes `foo` from 1.2.3 to 1.2.9 in `package.json`.">
 **Context:** head `<sha7>` · CI <passing | failing: <names> | pending | none> · size <n> changed lines (+ <m> lockfile lines) · PR description <ok|one-line|empty>
@@ -91,7 +92,7 @@ Print this short form instead of `output/report.md` §Report. Write it in STE. O
 1. **Q1** (`path:line`) — <1 concise STE sentence explaining the item>. <Direct question?>   # at most 3
 
 ---
-Effort: skim · Reach: diff · Lanes: skim ✓ · Quality gate: n/a · Findings: <raw> raw → <kept> post · Gates removed: <g2> out-of-diff, <g5> already raised, <refuted> refuted, <eval> evaluated-out · Persona: not applied (skim) · Language: ASD-STE100, G8 clean
+Effort: skim · Reach: diff · Verdict: <APPROVE|COMMENT|REQUEST_CHANGES> · Lanes: skim ✓ · Quality gate: n/a · Findings: <raw> raw → <kept> post · Gates removed: <g2> out-of-diff, <g5> already raised, <refuted> refuted, <eval> evaluated-out · Persona: not applied (skim) · Language: ASD-STE100, G8 clean
 ```
 
 Phase 3 at skim is the STE rewrite and the self-check only.

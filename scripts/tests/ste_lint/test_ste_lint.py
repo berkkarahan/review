@@ -173,9 +173,30 @@ def run_tests():
         "The delete route reads the user token and deletes the row without a check for the admin role.\n"
         "**Fix:** Verify that the caller holds the admin role before you delete the record from the database table.\n\n"
         "---\n"
-        "Effort: high · Lanes: security ✓ · Quality gate: FAIL · Findings: 2 raw → 1 merged → 1 post (0 chat-only) · Gates removed: 0 out-of-diff · Persona: neutral (none) · Language: ASD-STE100, G8 clean\n"
+        "Effort: high · Reach: wide · Verdict: REQUEST_CHANGES · Lanes: security ✓ · Quality gate: FAIL · Findings: 2 raw → 1 merged → 1 post (0 chat-only) · Gates removed: 0 out-of-diff · Persona: neutral (none) · Language: ASD-STE100, G8 clean\n"
     )
     chk("full PR report template with stacked headers passes", not ste_lint.lint(pr_report_clean), ste_lint.lint(pr_report_clean))
+
+    pr_comment_and_override = (
+        "## 🟡 Comments for the author — acme/app#43 · Refactor queue\n"
+        "This PR adds retry telemetry with one open question.\n"
+        "**Override note:** The feature flag stays off in production until the next release.\n"
+        "**Top items:** none. **Counts:** 0 critical · 0 high · 0 medium · 0 low · 0 questions · 0 chat-only\n\n"
+        "---\n"
+        "Effort: medium · Reach: related · Verdict: COMMENT · Lanes: adherence ✓ · Quality gate: PASS · Findings: 0 raw → 0 merged → 0 post (0 chat-only) · Gates removed: 0 out-of-diff · Persona: neutral (none) · Language: ASD-STE100, G8 clean\n"
+    )
+    chk("single-phrase COMMENT heading, Override note, and Verdict footer pass",
+        not ste_lint.lint(pr_comment_and_override), ste_lint.lint(pr_comment_and_override))
+
+    pr_approve_clean = (
+        "## 🟢 Ready to merge — acme/app#44 · Add metrics\n"
+        "This PR meets all requirements with one optional cleanup note.\n"
+        "**Top items:** none. **Counts:** 0 critical · 0 high · 0 medium · 0 low · 0 questions · 0 chat-only\n\n"
+        "---\n"
+        "Effort: low · Reach: callers · Verdict: APPROVE · Lanes: critical-risk ✓ · Quality gate: n/a · Findings: 0 raw → 0 merged → 0 post · Gates removed: 0 out-of-diff · Persona: neutral (none) · Language: ASD-STE100, G8 clean\n"
+    )
+    chk("single-phrase APPROVE heading and Verdict footer pass",
+        not ste_lint.lint(pr_approve_clean), ste_lint.lint(pr_approve_clean))
 
     cb_report_clean = (
         "## 🟡 Codebase needs targeted improvements — acme/app @ `abc1234` (Codebase review)\n"

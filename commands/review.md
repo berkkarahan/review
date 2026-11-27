@@ -1,5 +1,5 @@
 ---
-description: Multi-lane code review of a PR, a branch, staged or uncommitted changes, or the whole codebase
+description: Multi-lane code review of a PR, branch, staged/uncommitted changes, or codebase with an independent final PR verdict (APPROVE, COMMENT, or REQUEST_CHANGES)
 argument-hint: "[pr-url-or-number | staged | uncommitted | level=PR|CODEBASE | flags]"
 ---
 

@@ -39,7 +39,7 @@ A **framework-agnostic, codebase-aware, multi-lane code review skill** for AI co
 - **Blind Independent Verification + Evaluation Lane (`G10`):** Every `CRITICAL` and `HIGH` finding—plus every `Missing` or `Contradicted` acceptance criterion—is re-checked at `head_sha` by an independent verifier subagent that receives only the claim, location, and trigger (never the lane's reasoning). Surviving candidates are never taken for granted: the Phase 2.2 **`evaluation` lane** (`reference/lanes/evaluation.md`) classifies non-blocking candidates as `post`, `chat-only`, or `drop` and recalibrates inflated severities while preserving the safety floor.
 - **Mandatory 1-Sentence Question Refreshers:** Both author-facing questions (`Questions for the author` / `Open questions`) and interactive human-in-the-loop prompts (`AskUserQuestion` options, per-finding selection, decline confirmations, memory prompts) must pair every referenced ID (`C1`, `H2`, `Q1`, `B1`, `AC3`, etc.) with 1 concise STE refresher sentence explaining what that item is—never bare IDs alone.
 - **High-Throughput Orchestration & Token Optimization:** Automates Phase 0 bundling, parallel-threaded `gh`/`git` fetches, `diff-map.json`, signals, carry prep, and **per-lane diff slicing** (`lanes/<lane>.patch` at `PR` or `lanes/<lane>.files.txt` at `CODEBASE`) via [`scripts/build_bundle.py`](./scripts/build_bundle.py); cuts Phase 1 cold-start tokens by ~75% via [`lanes/lane-brief.md`](./reference/lanes/lane-brief.md) and **micro-lane auto-folding** (≤ 40 changed lines across ≤ 2 files); eliminates LLM YAML→JSON re-typing via [`scripts/merge_findings.py`](./scripts/merge_findings.py); overlaps Phase 2.2 Blind Verification with Non-Blocking Evaluation in one parallel wave; applies `fast` model tiering on `skim` and `low` efforts (`--no-tier` to override); and short-circuits Phase 3 on clean `APPROVE`/`HEALTHY` reviews.
-- **Deterministic Python Quality Gates (Stdlib-Only):** Uses zero-dependency Python scripts in [`scripts/`](./scripts) to build parallel bundles and per-lane diff slices (`build_bundle.py`), map diff lines (`diff_map.py`), run Gates `G1`–`G6`, dedupe, safety-floor enforcement, Carry `G9`, Breaker, and `medium` Pareto cuts (`merge_findings.py`), enforce schema/diff/trigger/confidence gates (`schema_lint.py`), reconcile carried findings (`carry_findings.py`), compute mechanical verdicts (`breaker.py`), lint Simplified Technical English and question refreshers (`ste_lint.py`), and measure per-lane precision (`precision.py`).
+- **Deterministic Python Quality Gates (Stdlib-Only):** Uses zero-dependency Python scripts in [`scripts/`](./scripts) to build parallel bundles and per-lane diff slices (`build_bundle.py`), map diff lines (`diff_map.py`), run Gates `G1`–`G6`, dedupe, safety-floor enforcement, Carry `G9`, Breaker validation, `medium` Pareto cuts, and PR verdict validation (`merge_findings.py`), enforce schema/diff/trigger/confidence gates (`schema_lint.py`), reconcile carried findings (`carry_findings.py`), validate findings/counts/Soft Guardrail and compute `CODEBASE` health states (`breaker.py`), lint Simplified Technical English and question refreshers (`ste_lint.py`), and measure per-lane precision (`precision.py`).
 - **Stateful Re-Review & Delta Carry:** Automatically detects prior reviews of the same PR, assigns stable finding IDs (`B1`, `D1`, `S1`, …), reviews only the commit delta (`<last_sha>..<head_sha>`) when history is linear, preserves user declines, and requires code evidence at `head_sha` to close open `CRITICAL`/`HIGH` findings or challenge prior declines.
 - **Configurable Persona & Memory Acquisition:** Adapts emphasis, comment structure, inline budgets, tone (`direct`, `constructive`, `mentor`, `strict`, `concise`, `neutral`), objective house rules (§8), and learned preferences (§9) via the persona file (`~/.claude/review/persona.md`, template in [`reference/persona.md`](./reference/persona.md)) without ever compromising the safety floor or STE grammar.
 
@@ -63,23 +63,24 @@ flowchart TD
         P03 --> Lanes["Launch Selected Candidate Lanes in One Message<br/>(lane-brief.md + lanes/&lt;lane&gt;.patch or .files.txt + compact JSON output;<br/>fast tier at skim/low only, standard tier at high/medium)"]
     end
 
-    subgraph Phase2 ["Phase 2: Deterministic Merge, Overlapped Verify/Eval Wave & Finalize"]
+    subgraph Phase2 ["Phase 2: Deterministic Merge, Overlapped Verify/Eval Wave, Finalize &amp; Verdict"]
         Lanes --> Merge["2.1 scripts/merge_findings.py merge &amp; drop-g6<br/>(Zero-token G1-G6, pruning, dedupe, split verify-batches &amp; nonblocking)"]
         Merge --> Verify["2.2 Blind Verifiers (Parallel)<br/>(CRITICAL/HIGH &amp; Missing/Contradicted ACs)"]
         Merge --> Eval["2.2 Evaluation Lane - Gate G10 (Parallel)<br/>(MEDIUM/LOW/QUESTION + MEDIUM evidence check -> post|chat-only|drop)"]
-        Verify --> Finalize["2.3 scripts/merge_findings.py finalize<br/>(Safety Floor + Carry G9 + Breaker Verdict + Medium Pareto Cut)"]
+        Verify --> Finalize["2.3 scripts/merge_findings.py finalize<br/>(Safety Floor + Carry G9 + Validation + blocking_signals + Pareto Cut)"]
         Eval --> Finalize
+        Finalize --> Verdict["2.4 Post-Review PR Verdict Decision (level=PR)<br/>(Holistic APPROVE | COMMENT | REQUEST_CHANGES regardless of inline comments;<br/>validated with Soft Guardrail via merge_findings.py verdict)"]
     end
 
     subgraph Phase3 ["Phase 3: Persona Pass (Zero-Finding Fast Path) & STE"]
-        Finalize --> PersonaPass["Skip Persona Pass on Zero-Finding APPROVE/HEALTHY;<br/>Else Re-rank, Fold, Apply Tone, Gate G7 (Chat-Only Excess)"]
+        Verdict --> PersonaPass["Skip Persona Pass on Zero-Finding APPROVE/HEALTHY;<br/>Else Re-rank, Fold, Apply Tone, Gate G7 (Chat-Only Excess)"]
         PersonaPass --> G8["Gate G8: STE &amp; Question Refresher Lint<br/>(scripts/ste_lint.py on reported.json or pareto.json)"]
     end
 
     subgraph Phase4 ["Phase 4: Deliver, Post & Learn"]
         G8 --> Report["4.1 Print Chat Report & Save Durable Artifacts<br/>(~/.claude/review/reviews/&lt;owner&gt;-&lt;repo&gt;-&lt;N|codebase&gt;-&lt;sha7&gt;/)"]
-        Report --> PostPrompt["4.2 Refresher-Backed Interactive Action Selection,<br/>carry_findings.py mark, Feedback Log & Memory"]
-        PostPrompt --> PostGH["4.3 Optional GitHub Review Posting (level=PR only)<br/>(SHA/State Check, Diff-Line Map, G8 Check, Explicit Confirmation)"]
+        Report --> PostPrompt["4.2 Refresher-Backed Interactive Action Selection (Independent Comments &amp; Verdict),<br/>carry_findings.py mark, Feedback Log &amp; Memory"]
+        PostPrompt --> PostGH["4.3 Optional GitHub Review Posting (level=PR only)<br/>(SHA/State Check, Diff-Line Map, G8 Check, Full Event Switching, Explicit Confirmation)"]
     end
 ```
 
@@ -89,9 +90,9 @@ flowchart TD
 | :--- | :--- | :--- | :--- |
 | **Phase 0: Plan (`0.1–0.3`)** | Lead (inline) | Resolves target and effort level, checks persona status, builds the immutable review bundle (`bundle_dir`) and `diff-map.json` (or `file-map.json` at `CODEBASE`), detects prior reviews for carry/delta mode, discovers the scoped intent chain (`intent.md`), selects conditional lanes, and prints the STE review plan. | [`bundle.md`](./reference/bundle.md), [`intent.md`](./reference/intent.md), [`effort/levels.md`](./reference/effort/levels.md), [`lanes/selection.md`](./reference/lanes/selection.md), [`build_bundle.py`](./scripts/build_bundle.py), [`diff_map.py`](./scripts/diff_map.py), [`carry_findings.py`](./scripts/carry_findings.py) |
 | **Phase 1: Fan Out** | Subagent lanes | Runs all selected candidate lanes concurrently in a single message. Every lane reads the shared bundle without re-fetching the PR, reviews strictly within scope (`diff.patch` at `PR`, `<files_list>` at `CODEBASE`) and its assigned `FOCUS` / `OWNERSHIP`, and returns compact JSON (`lanes/lane-brief.md` §Return). | [`lanes/prompt.md`](./reference/lanes/prompt.md), [`lanes/lane-brief.md`](./reference/lanes/lane-brief.md), [`lanes/lane-rules.md`](./reference/lanes/lane-rules.md), [`schema/finding.md`](./reference/schema/finding.md), [`lanes/*.md`](./reference/lanes) |
-| **Phase 2: Merge, Verify & Evaluate (`2.1–2.3`)** | Lead + Verifiers + Evaluator | Validates lane outputs (`G1`), applies deterministic gates (`G2` drops out-of-diff/invalid-location items, `G3`–`G6`), deduplicates findings, dispatches blind verifier subagents overlapped with the `evaluation` lane (`G10`) in one parallel wave (`2.2`), runs inline follow-up when needed, reconciles carried state (`G9`), and runs `breaker.py` via `merge_findings.py finalize` (`2.3`). | [`gates.md`](./reference/gates.md), [`lanes/verifier.md`](./reference/lanes/verifier.md), [`lanes/evaluation.md`](./reference/lanes/evaluation.md), [`output/verdict.md`](./reference/output/verdict.md), [`merge_findings.py`](./scripts/merge_findings.py), [`schema_lint.py`](./scripts/schema_lint.py), [`carry_findings.py`](./scripts/carry_findings.py), [`breaker.py`](./scripts/breaker.py) |
+| **Phase 2: Merge, Verify, Evaluate & Verdict (`2.1–2.4`)** | Lead + Verifiers + Evaluator | Validates lane outputs (`G1`), applies deterministic gates (`G2` drops out-of-diff/invalid-location items, `G3`–`G6`), deduplicates findings, dispatches blind verifier subagents overlapped with the `evaluation` lane (`G10`) in one parallel wave (`2.2`), runs inline follow-up when needed, reconciles carried state (`G9`) and validates floor/counts/`blocking_signals` via `merge_findings.py finalize` (`2.3`), and at `level=PR` makes a holistic post-review verdict decision (`APPROVE` \| `COMMENT` \| `REQUEST_CHANGES`) regardless of inline comments, validated with Soft Guardrail via `merge_findings.py verdict` (`2.4`). | [`gates.md`](./reference/gates.md), [`lanes/verifier.md`](./reference/lanes/verifier.md), [`lanes/evaluation.md`](./reference/lanes/evaluation.md), [`output/verdict.md`](./reference/output/verdict.md), [`merge_findings.py`](./scripts/merge_findings.py), [`schema_lint.py`](./scripts/schema_lint.py), [`carry_findings.py`](./scripts/carry_findings.py), [`breaker.py`](./scripts/breaker.py) |
 | **Phase 3: Persona Pass** | Lead | Re-ranks evaluated findings according to `persona.md` emphasis and learned preferences (`pareto.json` at `medium`), visually folds `LOW` items with `path:line`, shapes comments in `voice.tone`, moves Gate G7 excess PR-inline comments to chat-only (`PR` only), rewrites all human-read text in ASD-STE100 with 1-sentence question refreshers, and verifies compliance with `ste_lint.py` (`G8`). | [`output/persona-pass.md`](./reference/output/persona-pass.md), [`persona.md`](./reference/persona.md), [`output/ste.md`](./reference/output/ste.md), [`output/ste-examples.md`](./reference/output/ste-examples.md), [`ste_lint.py`](./scripts/ste_lint.py) |
-| **Phase 4: Deliver & Post (`4.1–4.3`)** | Lead | Prints the report and AC matrix to chat, archives durable artifacts (`report.md`, `ac-matrix.md`, `findings.json`, `breaker-input.json`) to `~/.claude/review/reviews/`, runs `carry_findings.py mark` on user declines/fixes (from Round 1 onward), logs decisions to `~/.claude/review/feedback.jsonl`, saves generalizable preferences to `persona.md`, and posts to GitHub (`level=PR` only) after verifying `head_sha`/`state` and receiving explicit confirmation. | [`output/report.md`](./reference/output/report.md), [`output/posting.md`](./reference/output/posting.md), [`precision.py`](./scripts/precision.py) |
+| **Phase 4: Deliver & Post (`4.1–4.3`)** | Lead | Prints the report and AC matrix to chat, archives durable artifacts (`report.md`, `ac-matrix.md`, `findings.json`, `breaker-input.json`, `verdict-decision.json`) to `~/.claude/review/reviews/`, runs `carry_findings.py mark` on user declines/fixes (from Round 1 onward), logs decisions to `~/.claude/review/feedback.jsonl`, saves generalizable preferences to `persona.md`, and posts to GitHub (`level=PR` only) with independent inline-comment selection and full `APPROVE`/`COMMENT`/`REQUEST_CHANGES` event switching after verifying `head_sha`/`state` and receiving explicit confirmation. | [`output/report.md`](./reference/output/report.md), [`output/posting.md`](./reference/output/posting.md), [`precision.py`](./scripts/precision.py) |
 
 ---
 
@@ -182,7 +183,7 @@ All options can be passed as explicit flags or stated in natural language (note:
 | Option / Flag | Values / Syntax | Default | Behavior |
 | :--- | :--- | :--- | :--- |
 | `level` / `--level` | `PR \| CODEBASE` | `PR` | Sets review scope. Always `PR` unless explicitly set to `CODEBASE`. `CODEBASE` exhaustively audits the full repository (or optional `<path>` scope) with all 7 lanes (`auto → high`, automatic directory sharding for >30 files / >6k LOC, `file-map.json` Gate G2, codebase health verdict). |
-| `--effort` | `high \| medium \| low \| skim \| auto` | `auto` | Controls how much the model thinks and how far it looks (thinking and reach), plus lane count, verifier subagents, Pareto cuts, and report length. **It never changes the verdict or the event.** Resolves to `high` at `level=CODEBASE` (`skim` disallowed at `CODEBASE`). See [Effort Profiles](#effort-profiles--the-five-core-invariants). |
+| `--effort` | `high \| medium \| low \| skim \| auto` | `auto` | Controls how much the model thinks and how far it looks (thinking and reach), plus lane count, verifier subagents, Pareto cuts, and report length. **It never restricts which verdict (`APPROVE`, `COMMENT`, or `REQUEST_CHANGES`) can be reached or posted.** Resolves to `high` at `level=CODEBASE` (`skim` disallowed at `CODEBASE`). See [Effort Profiles](#effort-profiles--the-five-core-invariants). |
 | `--since-last` | flag | auto-detected | Reviews the commit delta (`<last_sha>..<head_sha>`) when an earlier review exists and `last_sha` is an ancestor of `head_sha`. Automatically triggered when new commits are pushed. |
 | `--fresh` | flag | `false` | Ignores any earlier `findings.json` in `~/.claude/review/reviews/` and runs a clean full review without carry state. |
 | `--spec` | `<path-or-url>` | auto-discovered | Explicitly adds a planned document, spec, RFC, PRD, or URL to the Intent Chain (`Phase 0.2`). Ignored at `skim`. |
@@ -190,7 +191,7 @@ All options can be passed as explicit flags or stated in natural language (note:
 | `--no-inherit` | flag | `false` | Runs only `adherence` and `conventions` (when triggered; skips checklist-based lanes). At `low`, removes security/performance items from `critical-risk`. Ignored at `skim`. |
 | `--inline` | flag | auto (`small_pr`) | Forces small-PR mode at `high`/`medium` (`PR` only: lead runs `adherence` inline while at most 2 other lanes run in parallel). Ignored at `skim`. |
 | `--no-tier` | flag | `false` | Disables `fast` model tiering on `low` and `skim` subagents, forcing `standard` (`inherit`). (`high` and `medium` always use `standard`/`inherit`.) |
-| `--non-interactive` | flag | `false` | Asks no question, records no feedback, never posts, and ends with one JSON block: `next_step`, `verdict`, `open`, and the paths of the archived `findings.json` and `report.md`. |
+| `--non-interactive` | flag | `false` | Asks no question, records no feedback, never posts, and ends with one JSON block: `verdict`, `event`, `next_step`, `reason`, `override_reason`, `open`, `blocking_signals`, and the paths of the archived `findings.json` and `report.md`. |
 | `--post` | flag | interactive prompt | Proceeds directly to the Phase 4.3 GitHub review payload builder and confirmation flow after generating a `PR` report. |
 
 **Option Precedence:** `level` / `--level` → `--effort` → `--lanes` → `--no-inherit` → `--inline` / small-PR mode → `--spec` → `--no-tier` → `--post`.
@@ -199,17 +200,17 @@ All options can be passed as explicit flags or stated in natural language (note:
 
 ## Effort Profiles & The Five Core Invariants
 
-### Effort sets depth only
+### Effort sets depth only — Post-Review Verdict Decision (`level=PR`)
 
-Effort tells the model how much to think and how far to look. It does not draw a line between APPROVE, APPROVE WITH COMMENTS and REQUEST CHANGES. One table gives the verdict, the event and `next_step` at every effort ([`reference/output/verdict.md`](./reference/output/verdict.md)):
+Effort tells the model how much to think and how far to look. It never restricts which verdict (`APPROVE`, `COMMENT`, or `REQUEST_CHANGES`) can be reached or posted. At `level=PR`, after Phase 2.3 `finalize` validates findings, safety floor, carry state, and `blocking_signals`, Phase 2.4 ([`reference/output/verdict.md`](./reference/output/verdict.md)) decides the final PR verdict holistically **regardless of how many or which inline comments are made**, validated by `scripts/merge_findings.py verdict` / `scripts/breaker.py`:
 
-| Condition (checked in order) | Verdict | Event (`PR`) | `next_step` |
-| :--- | :--- | :--- | :--- |
-| Any open `CRITICAL`, unmet acceptance criterion, unmigrated breaking change, or **any open `HIGH`** | `REQUEST CHANGES` | `voice.hold_event` | `fix` |
-| Any `MEDIUM` or `QUESTION` | `APPROVE WITH COMMENTS` | `COMMENT` | `document` |
-| Only `LOW`, or nothing | `APPROVE` | `APPROVE` | `done` |
+| Verdict (`PR`) | Single-Phrase Header | Default Event (`PR`) | `next_step` | When to Use |
+| :--- | :--- | :--- | :--- | :--- |
+| **`REQUEST_CHANGES`** | 🔴 `Not ready to merge` | `voice.hold_event` | `fix` | Blocking bugs, unmet ACs, unmigrated breaking changes, or PR-wide scope/architecture flaws (even with 0 inline comments). |
+| **`COMMENT`** | 🟡 `Comments for the author` | `COMMENT` | `document` (`rerun` if incomplete) | Observations, open questions, coverage gaps, or advisory feedback without approving or blocking (with 0 or more inline comments). |
+| **`APPROVE`** | 🟢 `Ready to merge` | `APPROVE` | `done` | Ready to merge — with 0 inline comments, `LOW` nits, or non-blocking `MEDIUM`/`QUESTION` inline comments. Requires `override_reason` (Soft Guardrail) if active `blocking_signals` exist. |
 
-A `NOT ASSESSED` lane gives `rerun`. A `plausible` or `unverified` `CRITICAL`/`HIGH` counts like a confirmed one, but it has no safety floor and the report tags it. Verifier results are `confirmed`, `plausible`, `refuted` and `unclear`. A `CRITICAL`/`HIGH` with no verifier result is `unverified` at every effort.
+`author_is_me` always forces the GitHub API `event` to `COMMENT` (and uses self-review phrases). At posting time ([`reference/output/posting.md`](./reference/output/posting.md)), the user can still choose any inline comment subset (0, subset, or all) paired with any allowed event (`APPROVE` / `COMMENT` / `REQUEST_CHANGES`), with a Soft Guardrail warning before approving over `blocking_signals`. Verifier results are `confirmed`, `plausible`, `refuted`, and `unclear`; a `CRITICAL`/`HIGH` with no verifier result becomes `unverified` at every effort (counts in `open` / `blocking_signals`, no safety floor, tagged in report). `level=CODEBASE` keeps deterministic health states (`NEEDS ACTION`, `IMPROVEMENTS RECOMMENDED`, `HEALTHY`, `event: NONE`).
 
 | | `skim` | `low` | `medium` | `high` |
 | :--- | :--- | :--- | :--- | :--- |
@@ -223,8 +224,8 @@ Regardless of whether a review runs at `high`, `medium`, `low`, or `skim`, **fiv
 1. **Safety Floor:** No lane cap, Pareto cut, budget gate (`G7`), evaluation lane (`G10`), or persona preference may drop or hide (`chat-only`) a confirmed `CRITICAL`/`HIGH` while `CRITICAL`/`HIGH`, or lower below `HIGH` any confirmed floor-protected finding.
 2. **ASD-STE100 Compliance:** Every human-read text (the Phase 0.3 plan, the chat report, the posted review body, inline comments, and author/user questions) is written in ASD-STE100 Simplified Technical English, and every ID-citing question includes 1 concise STE refresher sentence.
 3. **Mandatory Gates:** `G0`/`G0b` (`PR` state/bot/profile), `G1`–`G4` (`diff_map.py`/`file-map.json` + `schema_lint.py`), `G5` (`PR` comments), `G8` (`ste_lint.py`), `G9` (carry when prior review exists and not `--fresh`), and `G10` (`evaluation`, subagent at `high`/`medium` and inline at `low`/`skim`) execute across efforts (`PR` vs `CODEBASE` scope rules apply).
-4. **Verdict Before Cuts:** The verdict, GitHub review event, and quality-gate band are computed on the evaluated `post` finding set *before* any Pareto cut (`medium`) or inline budget folding (`G7`). Cuts only affect display volume, never the verdict.
-5. **Deterministic Breaker:** [`scripts/breaker.py`](./scripts/breaker.py) (invoked via `merge_findings.py finalize`) runs at all four levels and is the sole authority for the verdict, phrase, GitHub event, and quality-gate band.
+4. **Verdict Independent of Cuts & Inline Comments:** At `level=PR`, the Phase 2.4 verdict decision (`APPROVE` | `COMMENT` | `REQUEST_CHANGES`) weighs the full review before any Gate G7 budget reduction and is independent of inline comment count. Cuts only affect display volume, never the verdict.
+5. **Deterministic Breaker & Soft Guardrail:** [`scripts/breaker.py`](./scripts/breaker.py) (invoked via `merge_findings.py finalize` and `verdict`) runs at all four levels to validate schemas, safety floor, carry continuity, open counts, `blocking_signals`, quality-gate band, and the Phase 2.4 PR verdict decision (enforcing `override_reason` whenever `APPROVE` overrides active `blocking_signals`, and computing deterministic health states at `level=CODEBASE`).
 
 ### Automatic Effort Resolution (`--effort=auto`)
 
@@ -251,7 +252,7 @@ When `--effort` is omitted or set to `auto`, Phase 0.1 (`build_bundle.py`) resol
 | **Evaluation (`G10`)** | 1 `evaluation` subagent (`lanes/evaluation.md`) + inline follow-up | 1 `evaluation` subagent (`lanes/evaluation.md`) + inline follow-up | Lead evaluates inline (`lanes/evaluation.md` rubric) | Lead evaluates inline (`lanes/evaluation.md` rubric) |
 | **Quality Gate Band** | Full (`PASS` / `CONCERNS` / `FAIL`) | Computed on active lanes; marked `(partial)` if folded | `n/a` | `n/a` |
 | **Persona Pass** | Full (re-rank, `LOW` visual fold, tone, `G7`, STE, `G8`) | Full on `pareto.json` set | STE rewrite + `G8` only | STE rewrite + `G8` only |
-| **`APPROVE` Allowed?** | Yes, when the verdict is `APPROVE` and `!author_is_me` (`PR` only; `NONE` at `CODEBASE`) | Same | Same | Same |
+| **`APPROVE` / `COMMENT` / `REQUEST_CHANGES` Allowed?** | All three allowed at every effort when `!author_is_me`, regardless of inline comments (Soft Guardrail if approving over `blocking_signals`; `NONE` at `CODEBASE`) | Same | Same | Same |
 
 ---
 
@@ -343,12 +344,14 @@ python3 scripts/build_bundle.py [target|staged|uncommitted|scope_path] [--level 
 # 1. Build a map of added and context right-side line numbers per file from a unified diff
 python3 scripts/diff_map.py <bundle_dir>/diff.patch > <bundle_dir>/diff-map.json
 
-# 2. Merge lane JSON outputs (G1-G5), drop CI-enforced linter nits (G6), & finalize (floor, G9, Breaker, Pareto)
+# 2. Merge lane JSON outputs (G1-G5), drop CI-enforced linter nits (G6), finalize (floor, G9, validation, Pareto), & record/validate PR verdict (Phase 2.4)
 python3 scripts/merge_findings.py merge <bundle_dir> [--raw <raw-lanes.json>] [--effort high|medium|low|skim] [--level PR|CODEBASE]
 python3 scripts/merge_findings.py drop-g6 <bundle_dir> [--ids id1,id2] [--file <g6-drop.json>]
 python3 scripts/merge_findings.py finalize <bundle_dir> [--verifier <verifier-results.json>] [--eval <eval-results.json>] \
   [--effort high|medium|low|skim] [--level PR|CODEBASE] [--hold-event REQUEST_CHANGES|COMMENT] \
   [--author-is-me] [--in-profile] [--ci <value>] [--carry] [--still-open <file>] [--cleared <file>] [--g6-drop <ids_or_file>]
+python3 scripts/merge_findings.py verdict <bundle_dir> --verdict <APPROVE|COMMENT|REQUEST_CHANGES> \
+  --reason "<one concise STE sentence>" [--override-reason "<one concise STE sentence>"] [--file <verdict-decision.json>]
 
 # 3. Run deterministic Gates G1 (schema), G2 (in-diff or codebase file-map), G3 (trigger), and G4 (confidence) standalone
 python3 scripts/schema_lint.py <findings-array-or-obj.json> <diff-or-file-map.json> [--level PR|CODEBASE]
@@ -358,10 +361,10 @@ python3 scripts/carry_findings.py prepare <prev_findings.json|-> <bundle_dir> [-
 python3 scripts/carry_findings.py reconcile <prev_findings.json|-> <new-findings.json> <bundle_dir>/findings.json [--reported <bundle_dir>/reported.json] [--level PR|CODEBASE]
 python3 scripts/carry_findings.py mark <durable_findings.json> <decisions.json> [--level PR|CODEBASE]
 
-# 5. Compute mechanical verdict, phrase, GitHub event, next_step, completeness, and quality-gate band (the same at every effort)
-python3 scripts/breaker.py <bundle_dir>/merged.json [--level PR|CODEBASE] --effort <high|medium|low|skim> \
+# 5. Validate findings/safety-floor/carry/Soft Guardrail, compute counts/band/blocking_signals, and replay PR verdict (or compute CODEBASE health verdict)
+python3 scripts/breaker.py <bundle_dir>/breaker-input.json [--level PR|CODEBASE] --effort <high|medium|low|skim> \
   [--hold-event REQUEST_CHANGES|COMMENT] [--author-is-me] [--in-profile] [--ci <value>] \
-  [--pre <pre.json>] [--previous <findings.json>]
+  [--pre <pre.json>] [--previous <findings.json>] [--verdict APPROVE|COMMENT|REQUEST_CHANGES --verdict-reason "<text>" [--verdict-override-reason "<text>"]] [--verdict-file <path>] [--require-verdict]
 
 # 6. Lint report or review payload for ASD-STE100 compliance and evidence preservation (Gate G8)
 python3 scripts/ste_lint.py <bundle_dir>/report.md --findings <bundle_dir>/reported.json [--level PR|CODEBASE] [--json]   # use pareto.json at medium
@@ -374,7 +377,7 @@ python3 scripts/precision.py [~/.claude/review/feedback.jsonl]
 
 ## Stateful Re-Review & Carry System (`G9`)
 
-Every completed review saves durable artifacts to `~/.claude/review/reviews/<owner>-<repo>-<N|codebase>-<sha7>/` (`report.md`, `ac-matrix.md`, `findings.json`, and `breaker-input.json`).
+Every completed review saves durable artifacts to `~/.claude/review/reviews/<owner>-<repo>-<N|codebase>-<sha7>/` (`report.md`, `ac-matrix.md`, `findings.json`, `breaker-input.json`, and `verdict-decision.json` at `level=PR`).
 
 When `/review` runs again on the same PR or codebase (unless `--fresh` is set):
 
@@ -499,19 +502,19 @@ review/
 │   │   ├── checklist-compatibility.md        # Checklist for compatibility lane
 │   │   └── checklist-robustness.md           # Checklist for robustness lane
 │   ├── output/
-│   │   ├── verdict.md                        # Phase 2.3: Breaker invocation and verdict counting rules
+│   │   ├── verdict.md                        # Phase 2.4: Post-review PR verdict decision rubric, Soft Guardrail, & breaker contract
 │   │   ├── persona-pass.md                   # Phase 3: Re-ranking, folding, tone shaping, Gate G7, & zero-finding fast path
 │   │   ├── ste.md                            # ASD-STE100 grammar rules, fixed headings, question refreshers, & self-check
 │   │   ├── ste-examples.md                   # Paraphrased reviewer patterns mapped to compliant STE sentences
 │   │   ├── report.md                         # Phase 4.1: Chat report template, AC matrix rules, & durable archiving
-│   │   └── posting.md                        # Phase 4.3: Head SHA/state verification, diff-line mapping, & GitHub API posting
+│   │   └── posting.md                        # Phase 4.3: Head SHA/state verification, diff-line mapping, event switching, & GitHub API posting
 │   └── schema/
 │       ├── finding.md                        # Finding & ACRow schemas, severity calibration, and JSON lane output schema
 │       └── carry.md                          # Stable ID prefixes, carried status lifecycle, and lane carry contracts
 └── scripts/                                  # Deterministic Python 3 scripts (standard library only)
     ├── build_bundle.py                       # Parallel-threaded Phase 0 bundle builder, diff/codebase slicer, signals & carry prep
-    ├── merge_findings.py                     # Deterministic Phase 2 merge (G1-G5), drop-g6, & finalize (floor, G9, breaker, Pareto)
-    ├── breaker.py                            # Computes open counts, completeness, quality-gate band, verdict, and event
+    ├── merge_findings.py                     # Deterministic Phase 2 merge (G1-G5), drop-g6, finalize (floor, G9, validation, Pareto), & PR verdict validation
+    ├── breaker.py                            # Validates findings/floor/carry/Soft Guardrail, computes counts/band/blocking_signals, & CODEBASE health verdicts
     ├── carry_findings.py                     # Prepares, reconciles, and marks carried findings across review rounds
     ├── diff_map.py                           # Parses unified diffs into right-side added/context line maps
     ├── precision.py                          # Computes keep rates per lane, severity, and rule from feedback.jsonl

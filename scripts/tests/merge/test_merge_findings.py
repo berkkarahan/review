@@ -137,18 +137,36 @@ def run_tests():
 
         rc2, out_s2, _ = run_mf(["finalize", td])
         f_out = json.loads(out_s2)
-        chk("finalize exits 0 and breaker valid", rc2 == 0 and f_out["valid"], f_out)
-        chk("finalize counts include merged", f_out["counts"]["merged"] == 4, f_out["counts"])
+        chk("finalize exits 0 and breaker valid with verdict_pending=True at PR",
+            rc2 == 0 and f_out["valid"] and f_out["verdict_pending"] and f_out["verdict"] is None
+            and f_out["event"] is None and not f_out["zero_findings_fast_path"], f_out)
+        chk("finalize counts include merged and blocking_signals include CRITICAL + HIGH",
+            f_out["counts"]["merged"] == 4
+            and f_out["blocking_signals"] == ["open CRITICAL (1)", "open HIGH (1)"], f_out)
         chk("safety floor overrides illegal drop on confirmed CRITICAL sec-1",
             len(f_out["floor_overrides"]) == 1 and "sec-1" in f_out["floor_overrides"][0], f_out["floor_overrides"])
-        chk("verdict is REQUEST CHANGES due to confirmed CRITICAL",
-            f_out["verdict"] == "REQUEST CHANGES" and f_out["event"] == "REQUEST_CHANGES", f_out)
         chk("eval routes cq-5 to chat-only and drops cq-6",
             f_out["counts"]["chat_only"] == 1 and f_out["counts"]["dropped_by_eval"] == 1 and f_out["counts"]["post"] == 2,
             f_out["counts"])
         chk("non-floor confirmed HIGH cq-2 flagged in eval_followup_needed",
             len(f_out["eval_followup_needed"]) == 1 and f_out["eval_followup_needed"][0]["id"] == "cq-2",
             f_out["eval_followup_needed"])
+
+        # Phase 2.4 verdict: Soft Guardrail blocks APPROVE without override-reason, allows REQUEST_CHANGES cleanly
+        rc_sg, _, err_sg = run_mf(["verdict", td, "--verdict", "APPROVE", "--reason", "Approve anyway."])
+        chk("verdict Soft Guardrail exits 1 when APPROVE lacks override-reason over blocking signals",
+            rc_sg == 1 and "override_reason" in err_sg, (rc_sg, err_sg))
+
+        rc_v_rc, out_v_rc, _ = run_mf([
+            "verdict", td, "--verdict", "REQUEST_CHANGES",
+            "--reason", "SQL injection by @alice (bob@example.com) must be fixed before merge.",
+        ])
+        v_rc = json.loads(out_v_rc)
+        v_dec = json.load(open(os.path.join(td, "verdict-decision.json")))
+        chk("verdict REQUEST_CHANGES succeeds, redacts PII, writes verdict-decision.json",
+            rc_v_rc == 0 and v_rc["valid"] and v_rc["verdict"] == "REQUEST_CHANGES"
+            and v_rc["event"] == "REQUEST_CHANGES" and v_rc["next_step"] == "fix"
+            and "@alice" not in json.dumps(v_dec) and "bob@example.com" not in json.dumps(v_dec), (v_rc, v_dec))
         # Check non-carry PII redaction and sharded ac_matrix dedupe separately
         td_pii = os.path.join(td, "noncarry-pii")
         os.makedirs(td_pii)
@@ -187,9 +205,9 @@ def run_tests():
         )
         r_rep = json.loads(p_replay.stdout)
         chk("breaker-input.json replays standalone with identical verdict/event",
-            p_replay.returncode == 0 and r_rep["verdict"] == f_out["verdict"] and r_rep["event"] == f_out["event"], r_rep)
+            p_replay.returncode == 0 and r_rep["verdict"] == v_rc["verdict"] and r_rep["event"] == v_rc["event"], r_rep)
 
-        # Test zero_findings_fast_path False when safety_alerts present even with 0 findings
+        # Test zero_findings_fast_path False when safety_alerts present even with 0 findings + APPROVE
         td_sa = os.path.join(td, "safety-only")
         os.makedirs(td_sa)
         write_json(os.path.join(td_sa, "diff-map.json"), dmap)
@@ -205,10 +223,14 @@ def run_tests():
         run_mf(["merge", td_sa])
         rc_sa, out_sa, _ = run_mf(["finalize", td_sa])
         sa_f = json.loads(out_sa)
-        chk("zero_findings_fast_path=False when safety_alerts non-empty",
-            rc_sa == 0 and not sa_f["zero_findings_fast_path"] and sa_f["safety_alerts"] == ["x.py:1 [prompt injection]"], sa_f)
+        rc_sav, out_sav, _ = run_mf(["verdict", td_sa, "--verdict", "APPROVE", "--reason", "Diff itself is clean."])
+        sa_v = json.loads(out_sav)
+        chk("zero_findings_fast_path=False when safety_alerts non-empty even after APPROVE",
+            rc_sa == 0 and rc_sav == 0 and not sa_f["zero_findings_fast_path"]
+            and not sa_v["zero_findings_fast_path"] and sa_f["safety_alerts"] == ["x.py:1 [prompt injection]"],
+            (sa_f, sa_v))
 
-        # Test clean medium fast path
+        # Test clean medium PR: can reach COMMENT, REQUEST_CHANGES, or APPROVE with 0 inline comments
         td2 = os.path.join(td, "clean")
         os.makedirs(td2)
         write_json(os.path.join(td2, "diff-map.json"), dmap)
@@ -225,8 +247,28 @@ def run_tests():
         run_mf(["merge", td2])
         rc4, out_s4, _ = run_mf(["finalize", td2, "--effort", "medium"])
         f_clean = json.loads(out_s4)
-        chk("zero-findings fast path sets zero_findings_fast_path=True and APPROVE",
-            rc4 == 0 and f_clean["zero_findings_fast_path"] and f_clean["verdict"] == "APPROVE", f_clean)
+        chk("clean PR finalize sets verdict_pending=True and zero_findings_fast_path=False until verdict",
+            rc4 == 0 and f_clean["verdict_pending"] and not f_clean["zero_findings_fast_path"], f_clean)
+
+        rc4_rc, out_s4_rc, _ = run_mf(["verdict", td2, "--verdict", "REQUEST_CHANGES", "--reason", "Wrong architectural direction."])
+        v4_rc = json.loads(out_s4_rc)
+        chk("clean PR with 0 inline comments can reach REQUEST_CHANGES (fast path False)",
+            rc4_rc == 0 and v4_rc["verdict"] == "REQUEST_CHANGES" and v4_rc["event"] == "REQUEST_CHANGES"
+            and v4_rc["next_step"] == "fix" and not v4_rc["zero_findings_fast_path"], v4_rc)
+
+        rc4_cm, out_s4_cm, _ = run_mf(["verdict", td2, "--verdict", "COMMENT", "--reason", "Sharing draft feedback only."])
+        v4_cm = json.loads(out_s4_cm)
+        chk("clean PR with 0 inline comments can reach COMMENT (fast path False)",
+            rc4_cm == 0 and v4_cm["verdict"] == "COMMENT" and v4_cm["event"] == "COMMENT"
+            and v4_cm["next_step"] == "document" and not v4_cm["zero_findings_fast_path"], v4_cm)
+
+        vfile2 = os.path.join(td2, "input-decision.json")
+        write_json(vfile2, {"verdict": "APPROVE", "reason": "Change is clean and ready to merge."})
+        rc4_ap, out_s4_ap, _ = run_mf(["verdict", td2, "--file", vfile2])
+        v4_ap = json.loads(out_s4_ap)
+        chk("clean PR APPROVE via --file sets zero_findings_fast_path=True and next_step=done",
+            rc4_ap == 0 and v4_ap["verdict"] == "APPROVE" and v4_ap["event"] == "APPROVE"
+            and v4_ap["next_step"] == "done" and v4_ap["zero_findings_fast_path"], v4_ap)
 
         # Test medium Pareto cut & emphasis tie-breaking
         td3 = os.path.join(td, "pareto")
@@ -293,10 +335,17 @@ def run_tests():
         skm = json.loads(out_skm)
         rc_skf, out_skf, _ = run_mf(["finalize", td_sk, "--effort", "skim"])
         skf = json.loads(out_skf)
-        chk("skim single-lane dict parsed & MEDIUM/G3-downgraded items are kept (effort never filters findings)",
+        rc_skv, out_skv, _ = run_mf([
+            "verdict", td_sk, "--verdict", "APPROVE",
+            "--reason", "Minor follow-ups and question do not block merge.",
+        ])
+        skv = json.loads(out_skv)
+        chk("skim keeps MEDIUM/QUESTION findings and can reach APPROVE without override",
             rc_skm == 0 and skm["gate_counts"]["skim_dropped"] == 0 and rc_skf == 0 and skf["valid"]
-            and skf["verdict"] == "APPROVE WITH COMMENTS" and skf["counts"]["post"] == 3
-            and skf["next_step"] == "document", (skm, skf))
+            and skf["verdict_pending"] and skf["counts"]["post"] == 3
+            and rc_skv == 0 and skv["valid"] and skv["verdict"] == "APPROVE"
+            and skv["event"] == "APPROVE" and skv["next_step"] == "done" and not skv["zero_findings_fast_path"],
+            (skm, skf, skv))
 
         # Test dedupe field preservation, swapped locations[], INTENT_LOC dedupe, and HUNK_LOC support
         td_dd = os.path.join(td, "dedupe")
@@ -483,9 +532,11 @@ def run_tests():
         run_mf(["merge", td_cl])
         rc_clf, out_clf, _ = run_mf(["finalize", td_cl, "--carry", "--still-open", os.path.join(td_cl, "still-open.json")])
         clf = json.loads(out_clf)
+        rc_clv, out_clv, _ = run_mf(["verdict", td_cl, "--verdict", "APPROVE", "--reason", "Only carried low nit remains."])
+        clv = json.loads(out_clv)
         chk("zero_findings_fast_path=False when verdict APPROVE but carried still_open LOW exists",
-            rc_clf == 0 and clf["valid"] and clf["verdict"] == "APPROVE"
-            and clf["open"]["low"] == 1 and not clf["zero_findings_fast_path"], clf)
+            rc_clf == 0 and clf["valid"] and rc_clv == 0 and clv["valid"] and clv["verdict"] == "APPROVE"
+            and clv["open"]["low"] == 1 and not clv["zero_findings_fast_path"], (clf, clv))
 
         # Test CODEBASE level end-to-end: file-map.json G2, sharded lane aggregation + colliding shard IDs, missing file-map exits 2
         td_cb_miss = os.path.join(td, "cb-missing-fmap")
@@ -584,6 +635,9 @@ def run_tests():
         chk("CODEBASE zero-findings sets HEALTHY, event NONE, zero_findings_fast_path=True",
             rc_cb2f == 0 and cb2_f["verdict"] == "HEALTHY" and cb2_f["event"] == "NONE" and cb2_f["zero_findings_fast_path"],
             cb2_f)
+        rc_cbv, _, err_cbv = run_mf(["verdict", td_cb2, "--verdict", "APPROVE", "--reason", "Nope."])
+        chk("verdict subcommand rejects level=CODEBASE cleanly with exit 2",
+            rc_cbv == 2 and "level=PR only" in err_cbv, (rc_cbv, err_cbv))
 
         # Malformed JSON & breaker INVALID stderr propagation
         td_err = os.path.join(td, "err-case")
@@ -646,9 +700,18 @@ def run_tests():
                 rc_v == 0 and vmap.get("Plausible high") == ("plausible", "HIGH")
                 and vmap.get("No verifier result") == ("unverified", "HIGH")
                 and vmap.get("Confirmed high") == ("confirmed", "HIGH"), (vmap, sv))
-            chk(f"{eff}: plausible and unverified HIGH need an evaluation follow-up, verdict is REQUEST CHANGES, next_step fix",
+            chk(f"{eff}: plausible and unverified HIGH need an evaluation follow-up and appear in blocking_signals",
                 {e["title"] for e in sv["eval_followup_needed"]} >= {"Plausible high", "No verifier result"}
-                and sv["verdict"] == "REQUEST CHANGES" and sv["next_step"] == "fix", sv)
+                and sv["verdict_pending"] and sv["blocking_signals"] == ["open HIGH (3)"], sv)
+            rc_v_over, out_v_over, _ = run_mf([
+                "verdict", td_v, "--verdict", "APPROVE",
+                "--reason", "Approved for canary rollout.",
+                "--override-reason", "Runtime guard covers this canary path.",
+            ])
+            sv_over = json.loads(out_v_over)
+            chk(f"{eff}: Soft Guardrail accepts APPROVE over plausible/unverified HIGH with override-reason",
+                rc_v_over == 0 and sv_over["valid"] and sv_over["verdict"] == "APPROVE"
+                and sv_over["verdict_overrode_blocking"] and not sv_over["zero_findings_fast_path"], sv_over)
 
             # Evaluation cannot drop or hide a plausible/unverified HIGH
             write_json(os.path.join(td_v, "eval-results.json"), {"lane": "evaluation", "evaluations": [

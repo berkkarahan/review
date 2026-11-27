@@ -140,12 +140,32 @@ def run_e2e_integration():
         p_f1 = run_cmd([sys.executable, "-I", "-B", mf_py, "finalize", b1, "--carry"])
         chk("e2e PR Round 1 finalize --carry exits 0", p_f1.returncode == 0, p_f1.stderr)
         f1_out = json.loads(p_f1.stdout)
-        chk("e2e PR Round 1 verdict is REQUEST CHANGES (an open HIGH blocks at every effort)",
-            f1_out.get("valid") and f1_out.get("verdict") == "REQUEST CHANGES" and f1_out.get("next_step") == "fix", f1_out)
+        chk("e2e PR Round 1 finalize returns verdict_pending=True and open HIGH in blocking_signals",
+            f1_out.get("valid") and f1_out.get("verdict_pending") and f1_out.get("verdict") is None
+            and f1_out.get("blocking_signals") == ["open HIGH (1)"], f1_out)
+
+        # Soft Guardrail rejects APPROVE without override-reason, then REQUEST_CHANGES succeeds
+        p_v1_bad = run_cmd([
+            sys.executable, "-I", "-B", mf_py, "verdict", b1,
+            "--verdict", "APPROVE", "--reason", "Approve anyway.",
+        ])
+        chk("e2e PR Round 1 Soft Guardrail blocks APPROVE without override-reason",
+            p_v1_bad.returncode == 1 and "override_reason" in p_v1_bad.stderr,
+            (p_v1_bad.returncode, p_v1_bad.stderr))
+
+        p_v1 = run_cmd([
+            sys.executable, "-I", "-B", mf_py, "verdict", b1,
+            "--verdict", "REQUEST_CHANGES",
+            "--reason", "The admin bypass must be fixed before merge.",
+        ])
+        v1_out = json.loads(p_v1.stdout)
+        chk("e2e PR Round 1 verdict REQUEST_CHANGES succeeds with next_step=fix",
+            p_v1.returncode == 0 and v1_out.get("valid") and v1_out.get("verdict") == "REQUEST_CHANGES"
+            and v1_out.get("next_step") == "fix", (p_v1.returncode, v1_out, p_v1.stderr))
 
         p_br1 = run_cmd([sys.executable, "-I", "-B", br_py, os.path.join(b1, "breaker-input.json")])
         chk("e2e PR Round 1 breaker standalone replay matches",
-            p_br1.returncode == 0 and json.loads(p_br1.stdout).get("verdict") == f1_out.get("verdict"),
+            p_br1.returncode == 0 and json.loads(p_br1.stdout).get("verdict") == v1_out.get("verdict"),
             (p_br1.returncode, p_br1.stderr))
 
         report1 = os.path.join(b1, "report.md")
@@ -227,6 +247,80 @@ def run_e2e_integration():
         chk("e2e PR Round 2 finalize --carry keeps S1 and passes breaker",
             p_f2.returncode == 0 and f2_out.get("valid") and f2_out.get("open", {}).get("high") == 1,
             (p_f2.returncode, f2_out, p_f2.stderr))
+
+        p_v2 = run_cmd([
+            sys.executable, "-I", "-B", mf_py, "verdict", b2,
+            "--verdict", "APPROVE",
+            "--reason", "Approved for internal staging verification.",
+            "--override-reason", "Staging environment restricts admin route to VPN.",
+        ])
+        v2_out = json.loads(p_v2.stdout)
+        chk("e2e PR Round 2 verdict APPROVE over open HIGH succeeds with override-reason",
+            p_v2.returncode == 0 and v2_out.get("valid") and v2_out.get("verdict") == "APPROVE"
+            and v2_out.get("verdict_overrode_blocking"),
+            (p_v2.returncode, v2_out, p_v2.stderr))
+
+        # E2E decoupled verdicts: APPROVE with open MEDIUM finding & REQUEST_CHANGES with 0 inline comments
+        b3 = os.path.join(td, "bundle3")
+        p_b3 = run_cmd([
+            sys.executable, "-I", "-B", bb_py,
+            "--cwd", repo, "--bundle-dir", b3, "--effort", "high",
+            "--local-only", "--fresh", "--reviews-dir", reviews_dir,
+        ])
+        dmap3 = json.load(open(os.path.join(b3, "diff-map.json"), encoding="utf-8"))
+        calc_line3 = dmap3["app/calc.py"]["added"][0]
+        write_json(os.path.join(b3, "raw-lanes.json"), {
+            "code-quality": {
+                "lane": "code-quality",
+                "findings": [{
+                    "id": "cq-m1", "lane": "code-quality", "severity": "MEDIUM", "confidence": "HIGH",
+                    "title": "Negative input silently returns zero",
+                    "location": f"app/calc.py:{calc_line3}",
+                    "issue": "Clamping hides invalid arguments.",
+                    "fix": "Raise a value error on negative input.",
+                    "introduced_by_pr": "yes",
+                }],
+            },
+            "adherence": {"lane": "adherence", "findings": [], "ac_matrix": []},
+        })
+        run_cmd([sys.executable, "-I", "-B", mf_py, "merge", b3])
+        write_json(os.path.join(b3, "eval-results.json"), {
+            "evaluations": [{"id": "cq-m1", "disposition": "post", "eval_reason": "Helpful cleanup."}],
+        })
+        run_cmd([sys.executable, "-I", "-B", mf_py, "finalize", b3, "--carry"])
+        p_v3 = run_cmd([
+            sys.executable, "-I", "-B", mf_py, "verdict", b3,
+            "--verdict", "APPROVE",
+            "--reason", "The PR is ready to merge with one non-blocking suggestion.",
+        ])
+        v3_out = json.loads(p_v3.stdout)
+        chk("e2e PR APPROVE with open MEDIUM inline comment succeeds without override",
+            p_b3.returncode == 0 and p_v3.returncode == 0 and v3_out.get("valid")
+            and v3_out.get("verdict") == "APPROVE" and v3_out.get("open", {}).get("medium") == 1
+            and not v3_out.get("verdict_overrode_blocking"),
+            (p_v3.returncode, v3_out, p_v3.stderr))
+
+        b4 = os.path.join(td, "bundle4")
+        run_cmd([
+            sys.executable, "-I", "-B", bb_py,
+            "--cwd", repo, "--bundle-dir", b4, "--effort", "high",
+            "--local-only", "--fresh", "--reviews-dir", reviews_dir,
+        ])
+        write_json(os.path.join(b4, "raw-lanes.json"), {
+            "adherence": {"lane": "adherence", "findings": [], "ac_matrix": []},
+        })
+        run_cmd([sys.executable, "-I", "-B", mf_py, "merge", b4])
+        run_cmd([sys.executable, "-I", "-B", mf_py, "finalize", b4, "--carry"])
+        p_v4 = run_cmd([
+            sys.executable, "-I", "-B", mf_py, "verdict", b4,
+            "--verdict", "REQUEST_CHANGES",
+            "--reason", "Split this PR into smaller independent changes before merge.",
+        ])
+        v4_out = json.loads(p_v4.stdout)
+        chk("e2e PR REQUEST_CHANGES with 0 inline comments succeeds cleanly",
+            p_v4.returncode == 0 and v4_out.get("valid") and v4_out.get("verdict") == "REQUEST_CHANGES"
+            and v4_out.get("next_step") == "fix" and sum(v4_out.get("open", {}).values()) == 0,
+            (p_v4.returncode, v4_out, p_v4.stderr))
 
         # CODEBASE sharded pipeline
         b_cb = os.path.join(td, "bundle_cb")

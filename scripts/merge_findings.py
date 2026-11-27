@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic Phase 2 merge, gates G1-G6, dedupe, verifier batching, evaluation finalize, Carry G9, Breaker, and Pareto cut.
+"""Deterministic Phase 2 merge, gates G1-G6, dedupe, verifier batching, evaluation finalize, Carry G9, Breaker, Pareto cut, and PR verdict validation.
 
 Usage:
   merge_findings.py merge    <bundle_dir> [--raw <raw-lanes.json>] [--effort high|medium|low|skim] [--level PR|CODEBASE]
@@ -8,6 +8,11 @@ Usage:
                              [--effort high|medium|low|skim] [--level PR|CODEBASE] [--hold-event REQUEST_CHANGES|COMMENT]
                              [--author-is-me] [--in-profile] [--ci <value>] [--carry] [--still-open <file>]
                              [--cleared <file>] [--g6-drop <ids_or_file>]
+                             [--verdict APPROVE|COMMENT|REQUEST_CHANGES] [--verdict-reason <text>]
+                             [--verdict-override-reason <text>] [--verdict-file <verdict-decision.json>]
+  merge_findings.py verdict  <bundle_dir> [--verdict APPROVE|COMMENT|REQUEST_CHANGES] [--reason <text>]
+                             [--override-reason <text>] [--file <verdict-decision.json>]
+                             [--hold-event REQUEST_CHANGES|COMMENT] [--author-is-me]
 
 Imports sibling schema_lint, carry_findings, and breaker in-process (zero subprocess calls).
 Python standard library only.
@@ -1007,6 +1012,72 @@ def _ac_refs_of(f):
     return {t.upper() for t in re.split(r"[\s,;/()]+", str(f.get("ac_ref") or "")) if t}
 
 
+def _redact_decision(dec):
+    """Scrub emails and @handles from verdict decision strings before persisting."""
+    out = {}
+    if dec.get("verdict") is not None:
+        out["verdict"] = str(dec["verdict"]).strip().upper() if isinstance(dec["verdict"], str) else dec["verdict"]
+    else:
+        out["verdict"] = None
+    reason = dec.get("reason")
+    if isinstance(reason, str):
+        out["reason"] = carry_findings.redact(reason.strip(), handles=True)
+    else:
+        out["reason"] = reason
+    override_reason = dec.get("override_reason")
+    if isinstance(override_reason, str) and override_reason.strip():
+        out["override_reason"] = carry_findings.redact(override_reason.strip(), handles=True)
+    elif override_reason is None or override_reason == "":
+        out["override_reason"] = None
+    else:
+        out["override_reason"] = override_reason
+    return out
+
+
+def _load_decision_from_args(verdict_file, verdict_val, reason_val, override_reason_val):
+    """Load and normalize a post-review PR verdict decision from file and/or CLI flags."""
+    has_any = any(v is not None for v in (verdict_file, verdict_val, reason_val, override_reason_val))
+    if not has_any:
+        return None
+    dec = {}
+    if verdict_file:
+        if not os.path.isfile(verdict_file):
+            raise MergeInputError(f"verdict file not found: {verdict_file}")
+        raw_dec = load_json(verdict_file)
+        if not isinstance(raw_dec, dict):
+            raise MergeInputError(f"verdict file must be a JSON object: {verdict_file}")
+        dec.update(raw_dec)
+    if verdict_val is not None:
+        dec["verdict"] = verdict_val
+    if reason_val is not None:
+        dec["reason"] = reason_val
+    if override_reason_val is not None:
+        dec["override_reason"] = override_reason_val
+    return _redact_decision(dec)
+
+
+def _compute_zero_fast_path(breaker_findings, chat_only_findings, safety_alerts, carry_summary, verdict_out):
+    open_breaker = [
+        f for f in breaker_findings
+        if isinstance(f, dict)
+        and f.get("status", "todo") == "todo"
+        and f.get("eval_disposition") not in ("drop", "chat-only")
+    ]
+    has_declined_present = bool(carry_summary and carry_summary.get("declined_still_present")) or any(
+        isinstance(f, dict) and f.get("declined_still_present") is True
+        for f in breaker_findings
+    )
+    return (
+        len(open_breaker) == 0
+        and len(chat_only_findings) == 0
+        and not bool(safety_alerts)
+        and not has_declined_present
+        and bool(verdict_out.get("valid"))
+        and verdict_out.get("verdict") in ("APPROVE", "HEALTHY")
+        and not bool(verdict_out.get("verdict_overrode_blocking"))
+    )
+
+
 def cmd_finalize(args):
     bundle_dir = os.path.abspath(args.bundle_dir)
     try:
@@ -1032,11 +1103,20 @@ def cmd_finalize(args):
         g6_drop_ids = _parse_drop_ids_spec(args.g6_drop) if args.g6_drop else set()
         cleared_arg_doc = load_json(args.cleared, default=[]) if args.cleared else []
         still_arg_doc = load_json(args.still_open, default=[]) if args.still_open else []
+        decision = _load_decision_from_args(
+            getattr(args, "verdict_file", None),
+            getattr(args, "verdict", None),
+            getattr(args, "verdict_reason", None),
+            getattr(args, "verdict_override_reason", None),
+        )
     except MergeInputError as exc:
         sys.stderr.write(f"merge_findings: {exc}\n")
         return 2
 
     level = str(getattr(args, "level", None) or pre_doc.get("level") or summary_doc.get("level") or "PR").upper()
+    if level == "CODEBASE" and decision is not None:
+        sys.stderr.write("merge_findings: --verdict flags apply to level=PR only\n")
+        return 2
     effort = args.effort or pre_doc.get("effort") or "high"
     pr_meta = summary_doc.get("pr") or pre_doc.get("pr") or {}
 
@@ -1355,6 +1435,7 @@ def cmd_finalize(args):
         "author_is_me": bool(args.author_is_me or pr_meta.get("author_is_me")),
         "in_profile": bool(args.in_profile or (summary_doc.get("gate_g0b") or {}).get("in_skim_profile")),
         "ci": args.ci if args.ci is not None else pr_meta.get("ci"),
+        "require_verdict": bool(level == "PR" and decision is not None),
     }
     merged_doc = {
         "level": level,
@@ -1369,6 +1450,9 @@ def cmd_finalize(args):
     }
     if breaker_opts["ci"] is not None:
         merged_doc["ci"] = breaker_opts["ci"]
+    if level == "PR" and decision is not None:
+        merged_doc["decision"] = decision
+        write_json(os.path.join(bundle_dir, "verdict-decision.json"), decision)
     write_json(os.path.join(bundle_dir, "merged.json"), merged_doc)
     write_json(os.path.join(bundle_dir, "breaker-input.json"), merged_doc)
 
@@ -1392,19 +1476,8 @@ def cmd_finalize(args):
     if merged_total is None:
         merged_total = len(pre_doc.get("findings") or [])
 
-    open_breaker = [
-        f for f in breaker_findings
-        if isinstance(f, dict)
-        and f.get("status", "todo") == "todo"
-        and f.get("eval_disposition") not in ("drop", "chat-only")
-    ]
-    zero_fast_path = (
-        len(open_breaker) == 0
-        and len(chat_only_findings) == 0
-        and not bool(pre_doc.get("safety_alerts"))
-        and not bool(carry_summary and carry_summary.get("declined_still_present"))
-        and bool(verdict_out.get("valid"))
-        and verdict_out.get("verdict") in ("APPROVE", "HEALTHY")
+    zero_fast_path = _compute_zero_fast_path(
+        breaker_findings, chat_only_findings, pre_doc.get("safety_alerts"), carry_summary, verdict_out
     )
 
     counts_out = {
@@ -1426,6 +1499,11 @@ def cmd_finalize(args):
         "level": level,
         "effort": effort,
         "verdict": verdict_out["verdict"],
+        "verdict_pending": verdict_out["verdict_pending"],
+        "verdict_reason": verdict_out["verdict_reason"],
+        "verdict_override_reason": verdict_out["verdict_override_reason"],
+        "verdict_overrode_blocking": verdict_out["verdict_overrode_blocking"],
+        "blocking_signals": verdict_out["blocking_signals"],
         "emoji": verdict_out["emoji"],
         "phrase": verdict_out["phrase"],
         "event": verdict_out["event"],
@@ -1434,6 +1512,7 @@ def cmd_finalize(args):
         "complete": verdict_out["complete"],
         "open": verdict_out["open"],
         "reasons": verdict_out["reasons"],
+        "notes": verdict_out["notes"],
         "counts": counts_out,
         "zero_findings_fast_path": zero_fast_path,
         "floor_overrides": floor_overrides,
@@ -1442,6 +1521,97 @@ def cmd_finalize(args):
         "safety_alerts": pre_doc.get("safety_alerts") or [],
         "carry_summary": carry_summary,
         "pareto": {"shown": len(pareto_out["shown"]), "total": pareto_out["total_post"], "cut_titles": pareto_out["cut_titles"]} if pareto_out else None,
+    }
+    json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
+    sys.stdout.write("\n")
+    for line in verdict_out.get("invalid") or []:
+        sys.stderr.write(f"INVALID: {line}\n")
+    return 0 if verdict_out["valid"] else 1
+
+
+def cmd_verdict(args):
+    """Phase 2.4: record and validate the post-review PR verdict decision against breaker.py."""
+    bundle_dir = os.path.abspath(args.bundle_dir)
+    breaker_in_path = os.path.join(bundle_dir, "breaker-input.json")
+    try:
+        merged_doc = load_json(breaker_in_path)
+        if not isinstance(merged_doc, dict):
+            sys.stderr.write("merge_findings: breaker-input.json not found; run finalize first\n")
+            return 2
+        summary_doc = load_json(os.path.join(bundle_dir, "bundle-summary.json"), default={}) or {}
+        pre_doc = load_json(os.path.join(bundle_dir, "merged-pre-verify.json"), default={}) or {}
+        pre_eval = load_json(os.path.join(bundle_dir, "candidates-pre-eval.json"), default=None)
+        chat_only_findings = load_json(os.path.join(bundle_dir, "chat-only.json"), default=[]) or []
+        findings_doc = load_json(os.path.join(bundle_dir, "findings.json"), default={}) or {}
+        prev_path = os.path.join(bundle_dir, "previous.json")
+        prev_findings = None
+        if isinstance(findings_doc, dict) and "next_id" in findings_doc and os.path.isfile(prev_path):
+            prev_raw = load_json(prev_path, default=None)
+            if isinstance(prev_raw, dict) and prev_raw.get("findings"):
+                prev_findings = prev_raw["findings"]
+            elif isinstance(prev_raw, list) and prev_raw:
+                prev_findings = prev_raw
+        decision = _load_decision_from_args(args.file, args.verdict, args.reason, args.override_reason)
+    except MergeInputError as exc:
+        sys.stderr.write(f"merge_findings: {exc}\n")
+        return 2
+
+    level = str(merged_doc.get("level") or summary_doc.get("level") or "PR").upper()
+    if level == "CODEBASE":
+        sys.stderr.write("merge_findings: verdict subcommand applies to level=PR only (level=CODEBASE uses finalize health verdicts)\n")
+        return 2
+
+    updated_doc = copy.deepcopy(merged_doc)
+    if args.hold_event is not None:
+        updated_doc["hold_event"] = args.hold_event
+    if args.author_is_me:
+        updated_doc["author_is_me"] = True
+    if decision is not None:
+        updated_doc["decision"] = decision
+    else:
+        updated_doc.pop("decision", None)
+
+    breaker_opts = {
+        "level": level,
+        "effort": updated_doc.get("effort") or "high",
+        "hold_event": updated_doc.get("hold_event") or "REQUEST_CHANGES",
+        "author_is_me": bool(updated_doc.get("author_is_me")),
+        "in_profile": bool(updated_doc.get("in_profile")),
+        "ci": updated_doc.get("ci"),
+        "require_verdict": True,
+    }
+
+    verdict_out = breaker.compute(updated_doc, breaker_opts, pre=pre_eval, previous=prev_findings)
+    if decision is not None:
+        write_json(os.path.join(bundle_dir, "verdict-decision.json"), decision)
+    write_json(os.path.join(bundle_dir, "merged.json"), updated_doc)
+    write_json(breaker_in_path, updated_doc)
+
+    zero_fast_path = _compute_zero_fast_path(
+        updated_doc.get("findings") or [], chat_only_findings, pre_doc.get("safety_alerts"), None, verdict_out
+    )
+
+    result = {
+        "valid": verdict_out["valid"],
+        "invalid": verdict_out["invalid"],
+        "level": level,
+        "effort": verdict_out["effort"],
+        "verdict": verdict_out["verdict"],
+        "verdict_pending": verdict_out["verdict_pending"],
+        "verdict_reason": verdict_out["verdict_reason"],
+        "verdict_override_reason": verdict_out["verdict_override_reason"],
+        "verdict_overrode_blocking": verdict_out["verdict_overrode_blocking"],
+        "blocking_signals": verdict_out["blocking_signals"],
+        "emoji": verdict_out["emoji"],
+        "phrase": verdict_out["phrase"],
+        "event": verdict_out["event"],
+        "next_step": verdict_out.get("next_step"),
+        "band": verdict_out["band"],
+        "complete": verdict_out["complete"],
+        "open": verdict_out["open"],
+        "reasons": verdict_out["reasons"],
+        "notes": verdict_out["notes"],
+        "zero_findings_fast_path": zero_fast_path,
     }
     json.dump(result, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")
@@ -1479,12 +1649,27 @@ def main(argv=None):
     p_f.add_argument("--still-open", dest="still_open")
     p_f.add_argument("--cleared", dest="cleared")
     p_f.add_argument("--g6-drop", dest="g6_drop")
+    p_f.add_argument("--verdict", type=str.upper, choices=breaker.PR_VERDICTS)
+    p_f.add_argument("--verdict-reason", dest="verdict_reason")
+    p_f.add_argument("--verdict-override-reason", dest="verdict_override_reason")
+    p_f.add_argument("--verdict-file", dest="verdict_file")
+
+    p_v = sub.add_parser("verdict")
+    p_v.add_argument("bundle_dir")
+    p_v.add_argument("--verdict", type=str.upper, choices=breaker.PR_VERDICTS)
+    p_v.add_argument("--reason")
+    p_v.add_argument("--override-reason", dest="override_reason")
+    p_v.add_argument("--file")
+    p_v.add_argument("--hold-event", dest="hold_event", choices=("REQUEST_CHANGES", "COMMENT"))
+    p_v.add_argument("--author-is-me", dest="author_is_me", action="store_true")
 
     args = ap.parse_args(argv)
     if args.cmd == "merge":
         return cmd_merge(args)
     if args.cmd == "drop-g6":
         return cmd_drop_g6(args)
+    if args.cmd == "verdict":
+        return cmd_verdict(args)
     return cmd_finalize(args)
 
 

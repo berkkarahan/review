@@ -390,12 +390,22 @@ with tempfile.TemporaryDirectory() as tmp:
     jdump(med_rep_new, {"last_sha": "c" * 40, "findings": [rep_high]})
     run("reconcile", med_dec_prev, med_rep_new, med_rep_out)
     med_rep_doc = jload(med_rep_out)
-    b_mr = bmod.compute({"findings": med_rep_doc["findings"], "lanes": [{"lane": "performance"}]},
-                        {"effort": "high"}, pre=[rep_high])
-    check("standing MEDIUM decline repeated by confirmed HIGH passes breaker and blocks APPROVE",
+    b_mr = bmod.compute(
+        {"findings": med_rep_doc["findings"], "lanes": [{"lane": "performance"}],
+         "decision": {"verdict": "COMMENT", "reason": "Declined finding still repeats."}},
+        {"effort": "high"}, pre=[rep_high],
+    )
+    b_mr_ap = bmod.compute(
+        {"findings": med_rep_doc["findings"], "lanes": [{"lane": "performance"}],
+         "decision": {"verdict": "APPROVE", "reason": "Approve without override."}},
+        {"effort": "high"}, pre=[rep_high],
+    )
+    check("standing MEDIUM decline repeated by confirmed HIGH passes breaker and triggers Soft Guardrail on APPROVE",
           med_rep_doc["findings"][0].get("declined_still_present") is True
-          and b_mr["valid"] and b_mr["declined_blocking"] == 1 and b_mr["verdict"] == "APPROVE WITH COMMENTS",
-          (med_rep_doc["findings"], b_mr))
+          and b_mr["valid"] and b_mr["declined_blocking"] == 1 and b_mr["verdict"] == "COMMENT"
+          and any("declined_blocking" in s for s in b_mr["blocking_signals"])
+          and not b_mr_ap["valid"],
+          (med_rep_doc["findings"], b_mr, b_mr_ap))
 
     # 5. Explicit id matching for re-raised open.json item even when shifted >15 lines and reworded
     exp_prev = os.path.join(tmp, "exp_prev.json")
